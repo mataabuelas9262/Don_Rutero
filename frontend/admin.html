@@ -114,10 +114,13 @@
                         </button>
                     </div>
 
-                    <!-- Selector de Pestañas: Rutas / Paradas -->
+                    <!-- Selector de Pestañas: Rutas / Paradas / Reportes -->
                     <div class="sidebar-mode-switcher">
                         <button type="button" id="admin-tab-routes" class="mode-tab-btn active">Rutas</button>
                         <button type="button" id="admin-tab-stops" class="mode-tab-btn">Paradas</button>
+                        <button type="button" id="admin-tab-reports" class="mode-tab-btn">
+                            Reportes <span id="admin-reports-badge" class="admin-tab-badge" style="display:none;">0</span>
+                        </button>
                     </div>
 
                     <!-- Panel de Rutas Registradas -->
@@ -141,6 +144,20 @@
                             <button type="button" class="admin-chip" data-stop-filter="orphan">Sin ruta</button>
                         </div>
                         <div id="admin-stop-list" class="route-list">
+                            <!-- Se renderiza con JS -->
+                        </div>
+                    </div>
+
+                    <!-- Panel de Reportes Ciudadanos -->
+                    <div id="admin-reports-panel" style="display: none; flex-direction: column; gap: 10px;">
+                        <div class="admin-filter-row" id="admin-report-status-filters">
+                            <button type="button" class="admin-chip active" data-report-filter="all">Todos</button>
+                            <button type="button" class="admin-chip" data-report-filter="pendiente">Pendientes</button>
+                            <button type="button" class="admin-chip" data-report-filter="en_revision">En revisión</button>
+                            <button type="button" class="admin-chip" data-report-filter="resuelto">Resueltos</button>
+                            <button type="button" class="admin-chip" data-report-filter="descartado">Descartados</button>
+                        </div>
+                        <div id="admin-report-list" class="route-list">
                             <!-- Se renderiza con JS -->
                         </div>
                     </div>

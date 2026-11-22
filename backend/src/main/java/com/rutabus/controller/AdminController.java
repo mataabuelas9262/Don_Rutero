@@ -2,9 +2,11 @@ package com.rutabus.controller;
 
 import com.rutabus.entity.Route;
 import com.rutabus.entity.RouteCoordinate;
+import com.rutabus.entity.RouteReport;
 import com.rutabus.entity.RouteStop;
 import com.rutabus.entity.Stop;
 import com.rutabus.repository.RouteCoordinateRepository;
+import com.rutabus.repository.RouteReportRepository;
 import com.rutabus.repository.RouteRepository;
 import com.rutabus.repository.RouteStopRepository;
 import com.rutabus.repository.StopRepository;
@@ -17,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -48,6 +51,13 @@ public class AdminController {
 
     @Autowired
     private PublicCatalogService publicCatalogService;
+
+    @Autowired
+    private RouteReportRepository routeReportRepository;
+
+    private static final Set<String> VALID_REPORT_STATUSES = Set.of(
+            "pendiente", "en_revision", "resuelto", "descartado"
+    );
 
     private String validateAndSanitizeRoute(Route route) {
         if (route == null) return "Datos de ruta requeridos.";
@@ -431,6 +441,44 @@ public class AdminController {
 
         publicCatalogService.invalidateCache();
         return ResponseEntity.ok(Map.of("message", "Trazado y paradas de la ruta actualizados exitosamente"));
+    }
+
+    // -----------------------------------------------------
+    // GESTIÓN DE REPORTES CIUDADANOS
+    // -----------------------------------------------------
+
+    @GetMapping("/reports")
+    public List<RouteReport> getCitizenReports() {
+        return routeReportRepository.findAllByOrderByCreatedAtDesc();
+    }
+
+    @PatchMapping("/reports/{id}")
+    public ResponseEntity<?> updateCitizenReport(@PathVariable Long id, @RequestBody Map<String, String> body) {
+        String rawStatus = body != null && body.get("status") != null ? body.get("status").trim().toLowerCase() : "";
+        if (!VALID_REPORT_STATUSES.contains(rawStatus)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Estado inválido. Usa: pendiente, en_revision, resuelto o descartado."));
+        }
+        String note = body.get("adminNote") != null ? body.get("adminNote").trim() : null;
+        if (note != null && note.length() > 500) {
+            return ResponseEntity.badRequest().body(Map.of("error", "La nota de administrador no debe exceder 500 caracteres."));
+        }
+
+        return routeReportRepository.findById(id).<ResponseEntity<?>>map(report -> {
+            report.setStatus(rawStatus);
+            if (body.containsKey("adminNote")) {
+                report.setAdminNote(note != null && !note.isEmpty() ? note : null);
+            }
+            report.setUpdatedAt(LocalDateTime.now());
+            return ResponseEntity.ok(routeReportRepository.save(report));
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    @DeleteMapping("/reports/{id}")
+    public ResponseEntity<?> deleteCitizenReport(@PathVariable Long id) {
+        return routeReportRepository.findById(id).map(report -> {
+            routeReportRepository.delete(report);
+            return ResponseEntity.ok(Map.of("message", "Reporte eliminado"));
+        }).orElse(ResponseEntity.notFound().build());
     }
 
     // DTOs para la petición de actualización geométrica

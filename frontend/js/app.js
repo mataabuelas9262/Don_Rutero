@@ -992,19 +992,19 @@ function updateRouteDisplay() {
         return;
     }
 
-    // Búsqueda por texto normal
-    const filtered = categoryRoutes.filter(r => {
-        if (!q) return true;
-        return r.name.toLowerCase().includes(q) ||
-            (r.description && r.description.toLowerCase().includes(q)) ||
-            (r.stopsList && r.stopsList.some(rs => {
+    // Búsqueda inteligente por texto normalizado, tokens y sinónimos
+    const filtered = !q ? categoryRoutes : categoryRoutes
+        .map(r => {
+            const stopNames = (r.stopsList || []).map(rs => {
                 const s = rs.stop || rs;
-                const nameMatch = s.name && s.name.toLowerCase().includes(q);
-                const addrMatch = s.address && s.address.toLowerCase().includes(q);
-                const typeMatch = s.type && s.type.toLowerCase().includes(q);
-                return nameMatch || addrMatch || typeMatch;
-            }));
-    });
+                return `${s.name || ''} ${s.address || ''} ${s.type || ''}`;
+            }).join(' ');
+            const matchScore = scoreTextMatch(currentSearch, r.name, `${r.description || ''} ${stopNames}`);
+            return { route: r, score: matchScore };
+        })
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.route);
 
     renderRoutes(filtered);
 }
@@ -1013,6 +1013,176 @@ function filterRoutes(searchText) {
     currentSearch = searchText;
     updateRouteDisplay();
     renderSearchSuggestions(searchText);
+}
+
+// ----------------------------------------------------------
+// MOTOR DE BÚSQUEDA INTELIGENTE (SINÓNIMOS, TOKENS Y TOLERANCIA A ERRORES)
+// ----------------------------------------------------------
+const SEARCH_STOP_WORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'en', 'y', 'con', 'al', 'para', 'por', 'un', 'una']);
+
+const SEARCH_SYNONYM_GROUPS = [
+    ['imss', 'seguro', 'seguro social', 'hgzmf', 'clinica 3', 'hector gonzalez', 'hospital general'],
+    ['hospital', 'clinica', 'medico', 'salud', 'urgencias', 'cruz roja'],
+    ['farmacia', 'farmacias', 'medicina', 'medicinas', 'moderna', 'guadalajara', 'similares', 'benavides'],
+    ['marina', 'marina mazatlan', 'cid marina', 'convenciones', 'international center'],
+    ['malecon', 'av del mar', 'avenida del mar', 'costera', 'playa norte', 'olas altas', 'mujer mazatleca', 'casa del marino'],
+    ['zona dorada', 'dorada', 'camaron sabalo', 'gaviotas', 'zona hotelera'],
+    ['centro', 'centro historico', 'mercado pino suarez', 'pino suarez', 'plazuela machado', 'machado', 'catedral', 'plaza republica', 'ayuntamiento', 'azueta'],
+    ['central', 'central camionera', 'camionera', 'terminal', 'autobuses'],
+    ['acuario', 'gran acuario', 'parque central'],
+    ['embarcadero', 'isla de la piedra', 'lancha', 'ferry', 'transbordador', 'puerto'],
+    ['universidad', 'uni', 'facultad', 'campus', 'politecnica', 'upsin', 'uas', 'itmaz', 'tec', 'tecnologico', 'tecmilenio', 'ico', 'icatsin'],
+    ['escuela', 'colegio', 'instituto', 'prepa', 'preparatoria', 'conalep', 'cbtis', 'cetmar', 'secundaria'],
+    ['super', 'supermercado', 'mandado', 'walmart', 'soriana', 'ley', 'bodega aurrera', 'aurrera', 'sams', 'mega', 'abastos'],
+    ['cafe', 'cafeteria', 'coffee', 'caffe', 'starbucks', 'caffenio', 'hunters', 'panama'],
+    ['pasteleria', 'panaderia', 'postres', 'panama', 'dairy queen'],
+    ['comida', 'restaurante', 'mariscos', 'taqueria', 'tacos', 'sushi', 'pizza', 'hamburguesa', 'alitas', 'cenaduria'],
+    ['hamburguesa', 'hamburguesas', 'carls', 'carls jr', 'mcdonalds', 'burger'],
+    ['pizza', 'pizzeria', 'little caesars', 'rin rin', 'la beba'],
+    ['cine', 'peliculas', 'cinemex', 'cinepolis', 'multicinemas'],
+    ['banco', 'cajero', 'bbva', 'bancomer', 'banorte', 'santander', 'banamex', 'citibanamex', 'scotiabank', 'hsbc'],
+    ['gym', 'gimnasio', 'ejercicio', 'pesas', 'fitness', 'smart fit', 'lionfit', 'roca boxing', 'cancha', 'deportivo'],
+    ['refacciones', 'refaccionaria', 'autopartes', 'autozone', 'oreilly', 'pina', 'pro one'],
+    ['tienda', 'abarrotes', 'oxxo', 'kiosko', 'conveniencia'],
+    ['gas', 'gasolina', 'gasolinera', 'pemex', 'redpetroil', 'indian gas'],
+    ['plaza', 'centro comercial', 'mall', 'galerias', 'acaya', 'sendero', 'gran plaza', 'isla tres', 'san joaquin'],
+    ['hotel', 'resort', 'suites', 'posada', 'hospedaje'],
+    ['iglesia', 'templo', 'parroquia', 'catedral', 'capilla', 'san judas'],
+    ['panteon', 'cementerio'],
+    ['carretera', 'internacional', 'mex 15', 'libramiento'],
+    ['naval', 'marina armada', 'region naval', 'zona naval', 'hospital naval']
+];
+
+const SEARCH_SYNONYM_MAP = (() => {
+    const map = new Map();
+    SEARCH_SYNONYM_GROUPS.forEach((group, groupIdx) => {
+        group.forEach(term => {
+            if (!map.has(term)) map.set(term, new Set());
+            map.get(term).add(groupIdx);
+            term.split(' ').forEach(w => {
+                if (w.length >= 3) {
+                    if (!map.has(w)) map.set(w, new Set());
+                    map.get(w).add(groupIdx);
+                }
+            });
+        });
+    });
+    return map;
+})();
+
+function normalizeSearchText(str) {
+    return String(str || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function tokenizeSearchQuery(normStr) {
+    const rawTokens = normStr ? normStr.split(' ').filter(Boolean) : [];
+    const meaningful = rawTokens.filter(t => !SEARCH_STOP_WORDS.has(t));
+    return meaningful.length > 0 ? meaningful : rawTokens;
+}
+
+function levenshteinWithin(a, b, maxDist) {
+    if (Math.abs(a.length - b.length) > maxDist) return false;
+    if (a === b) return true;
+    const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+        let cur = [i];
+        let rowMin = i;
+        for (let j = 1; j <= b.length; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            const val = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+            cur.push(val);
+            if (val < rowMin) rowMin = val;
+        }
+        if (rowMin > maxDist) return false;
+        for (let j = 0; j <= b.length; j++) prev[j] = cur[j];
+    }
+    return prev[b.length] <= maxDist;
+}
+
+function getSynonymsForQuery(normQuery, queryTokens) {
+    const groupIds = new Set();
+    if (SEARCH_SYNONYM_MAP.has(normQuery)) {
+        SEARCH_SYNONYM_MAP.get(normQuery).forEach(id => groupIds.add(id));
+    }
+    queryTokens.forEach(tok => {
+        if (SEARCH_SYNONYM_MAP.has(tok)) {
+            SEARCH_SYNONYM_MAP.get(tok).forEach(id => groupIds.add(id));
+        }
+    });
+    return Array.from(groupIds).flatMap(id => SEARCH_SYNONYM_GROUPS[id]);
+}
+
+function scoreTextMatch(queryRaw, titleText, extraText = '') {
+    const nQuery = normalizeSearchText(queryRaw);
+    if (!nQuery) return 1;
+
+    const nTitle = normalizeSearchText(titleText);
+    const nExtra = normalizeSearchText(extraText);
+    const combined = nExtra ? `${nTitle} ${nExtra}` : nTitle;
+
+    let score = 0;
+    if (nTitle === nQuery) score += 160;
+    else if (nTitle.startsWith(nQuery)) score += 120;
+    else if (nTitle.includes(nQuery)) score += 90;
+    else if (combined.includes(nQuery)) score += 55;
+
+    const qTokens = tokenizeSearchQuery(nQuery);
+    if (qTokens.length === 0) return score;
+
+    const titleWords = nTitle ? nTitle.split(' ') : [];
+    const combinedWords = combined ? combined.split(' ') : [];
+
+    let tokenScoreSum = 0;
+    for (const qt of qTokens) {
+        let bestTok = 0;
+        if (titleWords.some(w => w === qt)) {
+            bestTok = 42;
+        } else if (titleWords.some(w => w.startsWith(qt))) {
+            bestTok = 34;
+        } else if (nTitle.includes(qt)) {
+            bestTok = 26;
+        } else if (combinedWords.some(w => w === qt || w.startsWith(qt))) {
+            bestTok = 18;
+        } else if (combined.includes(qt)) {
+            bestTok = 14;
+        } else if (qt.length >= 4) {
+            const maxEdit = qt.length >= 7 ? 2 : 1;
+            if (titleWords.some(w => w.length >= 3 && levenshteinWithin(qt, w, maxEdit))) {
+                bestTok = 16;
+            } else if (combinedWords.some(w => w.length >= 4 && levenshteinWithin(qt, w, 1))) {
+                bestTok = 10;
+            }
+        }
+
+        if (bestTok === 0) {
+            // Intentar coincidencia referencial por sinónimo del token
+            const syns = SEARCH_SYNONYM_MAP.has(qt)
+                ? Array.from(SEARCH_SYNONYM_MAP.get(qt)).flatMap(id => SEARCH_SYNONYM_GROUPS[id])
+                : [];
+            if (syns.some(s => nTitle.includes(s))) bestTok = 15;
+            else if (syns.some(s => combined.includes(s))) bestTok = 11;
+        }
+
+        if (bestTok === 0) {
+            // Solo si la frase completa (ej. "seguro social") es un sinónimo exacto en el mapa
+            if (SEARCH_SYNONYM_MAP.has(nQuery)) {
+                const exactPhraseSyns = Array.from(SEARCH_SYNONYM_MAP.get(nQuery)).flatMap(id => SEARCH_SYNONYM_GROUPS[id]);
+                if (exactPhraseSyns.some(s => combined.includes(s))) {
+                    return score + 38;
+                }
+            }
+            return 0;
+        }
+        tokenScoreSum += bestTok;
+    }
+
+    return score + tokenScoreSum;
 }
 
 // ----------------------------------------------------------
@@ -1039,92 +1209,240 @@ function safeUserColor(color, fallback = '#475569') {
     return /^#[0-9a-fA-F]{3,8}$/.test(val) ? val : fallback;
 }
 
+function inferOsmStopType(osmClass, osmType) {
+    const cls = (osmClass || '').toLowerCase();
+    const t = (osmType || '').toLowerCase();
+    if (cls === 'amenity') {
+        if (t === 'hospital' || t === 'clinic' || t === 'doctors') return 'hospital';
+        if (t === 'pharmacy') return 'farmacia';
+        if (t === 'school' || t === 'university' || t === 'college' || t === 'kindergarten') return 'escuela';
+        if (t === 'restaurant' || t === 'cafe' || t === 'fast_food' || t === 'bar' || t === 'ice_cream') return 'restaurante';
+        if (t === 'bank' || t === 'atm') return 'banco';
+        if (t === 'fuel') return 'gasolinera';
+        if (t === 'bus_station' || t === 'ferry_terminal') return 'transporte';
+        if (t === 'place_of_worship') return 'iglesia';
+        if (t === 'townhall' || t === 'police' || t === 'courthouse' || t === 'library' || t === 'post_office') return 'gobierno';
+        return 'comercio';
+    }
+    if (cls === 'healthcare') return 'hospital';
+    if (cls === 'shop') {
+        if (t === 'car_repair' || t === 'car_parts' || t === 'hardware') return 'refaccionaria';
+        if (t === 'chemist' || t === 'pharmacy') return 'farmacia';
+        return 'comercio';
+    }
+    if (cls === 'tourism') {
+        if (t === 'hotel' || t === 'hostel' || t === 'resort' || t === 'motel' || t === 'guest_house') return 'hotel';
+        return 'turistico';
+    }
+    if (cls === 'leisure') {
+        if (t === 'park' || t === 'garden' || t === 'playground') return 'parque';
+        if (t === 'fitness_centre' || t === 'sports_centre' || t === 'stadium' || t === 'pitch') return 'deportivo';
+        if (t === 'beach_resort') return 'hotel';
+        return 'turistico';
+    }
+    if (cls === 'natural' && (t === 'beach' || t === 'coastline')) return 'hotel';
+    if (cls === 'place' || t === 'residential' || t === 'suburb' || t === 'neighbourhood' || t === 'quarter') return 'colonia';
+    if (cls === 'highway') return 'calle';
+    if (cls === 'building' && (t === 'church' || t === 'cathedral')) return 'iglesia';
+    return 'lugar';
+}
+
+const MAZATLAN_OSM_VIEWBOX = '-106.54,23.38,-106.28,23.13';
+const OSM_QUERY_REWRITES = [
+    [/^(?:col|colonia|fracc|fraccionamiento)\.?\s+/i, ''],
+    [/^(?:av|ave|avda|calz|blvd)\.?\s+/i, 'Avenida '],
+    [/\blibramiento\s*(?:iii|3)\b/i, 'Avenida Oscar Perez Escobosa'],
+    [/\blibramiento\s*(?:ii|2)\b/i, 'Avenida Munich'],
+    [/\bmexico\s*15\b/i, 'Carretera Internacional'],
+    [/\bmalecon\b/i, 'Avenida del Mar'],
+    [/\bcamaron\s*sabalo\b/i, 'Avenida Camaron Sabalo'],
+    [/\bcolosio\b/i, 'Luis Donaldo Colosio'],
+    [/\bejer(?:cito)?\s*mex(?:icano)?\b/i, 'Avenida Ejercito Mexicano']
+];
+
+function expandOsmQuery(rawQuery) {
+    let q = String(rawQuery || '').trim();
+    for (const [pattern, replacement] of OSM_QUERY_REWRITES) {
+        if (pattern.test(q)) {
+            q = q.replace(pattern, replacement).trim();
+        }
+    }
+    return q || String(rawQuery || '').trim();
+}
+
+function formatOsmSubtitle(item) {
+    const addr = item && item.address ? item.address : {};
+    const zone = addr.neighbourhood || addr.suburb || addr.quarter || addr.residential || '';
+    const road = addr.road || '';
+    const titleFirst = (item.display_name || '').split(',')[0].trim();
+    const parts = [];
+    if (road && normalizeSearchText(road) !== normalizeSearchText(titleFirst)) parts.push(road);
+    if (zone && normalizeSearchText(zone) !== normalizeSearchText(titleFirst)) parts.push(zone);
+    if (parts.length > 0) return `${parts.join(' · ')} · Mazatlán`;
+    const cleanFull = (item.display_name || '').replace(/,\s*Sinaloa.*$/i, '').trim();
+    return cleanFull || 'Mazatlán, Sinaloa';
+}
+
 let osmSearchTimeout = null;
+const _osmRequests = new Map();
 
 async function fetchOSMPlaces(query, dropdownId, type) {
     if (query.length < 3) return;
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query + ', Mazatlan, Sinaloa')}&format=json&limit=3&addressdetails=1`;
+    const prev = _osmRequests.get(dropdownId);
+    if (prev && prev.controller) {
+        try { prev.controller.abort(); } catch (_) {}
+    }
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const seq = (prev ? prev.seq : 0) + 1;
+    _osmRequests.set(dropdownId, { seq, controller });
+
+    const expanded = expandOsmQuery(query);
+    const params = new URLSearchParams({
+        q: `${expanded}, Mazatlán, Sinaloa, México`,
+        format: 'jsonv2',
+        limit: '7',
+        addressdetails: '1',
+        viewbox: MAZATLAN_OSM_VIEWBOX,
+        bounded: '1',
+        countrycodes: 'mx',
+        'accept-language': 'es'
+    });
+    const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, controller ? { signal: controller.signal } : undefined);
         const data = await response.json();
-        
+
+        const currentReq = _osmRequests.get(dropdownId);
+        if (currentReq && currentReq.seq !== seq) return;
+
         const dropdown = document.getElementById(dropdownId);
         if (!dropdown || dropdown.style.display === 'none') return;
-        
+
+        const seenKeys = new Set();
+        const acceptedPoints = [];
         let html = '';
-        data.forEach(item => {
+
+        (Array.isArray(data) ? data : []).forEach(item => {
+            if (acceptedPoints.length >= 4) return;
             const fullName = item.display_name || '';
-            const shortName = fullName.split(',')[0];
+            const shortName = fullName.split(',')[0].trim();
             const lat = parseFloat(item.lat);
             const lng = parseFloat(item.lon);
             if (isNaN(lat) || isNaN(lng)) return;
-            
-            let title = isNaN(shortName) ? shortName : fullName.split(',')[1]?.trim() || shortName;
-            
-            const osmType = item.type || '';
-            const osmClass = item.class || '';
-            
-            let badgeText = "OpenStreetMap";
-            let iconUrl = "assets/icons/ui_ubicacion.svg";
-            let color = "#2563eb";
-            
-            if (osmClass === 'amenity') {
-                if (osmType === 'hospital' || osmType === 'clinic' || osmType === 'doctors') { badgeText = 'Salud / Médico'; color = '#dc2626'; iconUrl = 'assets/icons/pin_hospital.svg'; }
-                else if (osmType === 'school' || osmType === 'university' || osmType === 'college') { badgeText = 'Educación'; color = '#d97706'; iconUrl = 'assets/icons/pin_escuela.svg'; }
-                else if (osmType === 'restaurant' || osmType === 'cafe' || osmType === 'fast_food') { badgeText = 'Comida'; color = '#ea580c'; iconUrl = 'assets/icons/pin_restaurante.svg'; }
-                else { badgeText = 'Establecimiento'; color = '#6366f1'; iconUrl = 'assets/icons/ui_buscar.svg'; }
-            } else if (osmClass === 'shop') {
-                badgeText = 'Comercio'; color = '#059669'; iconUrl = 'assets/icons/pin_tienda.svg';
-            } else if (osmClass === 'tourism' || osmType === 'hotel') {
-                badgeText = 'Turismo'; color = '#0284c7'; iconUrl = 'assets/icons/pin_hotel.svg';
-            } else if (osmClass === 'place' || osmType === 'residential' || osmType === 'suburb' || osmType === 'neighbourhood') {
-                badgeText = 'Colonia / Zona'; color = '#059669'; iconUrl = 'assets/icons/ui_ubicacion.svg';
-            } else if (osmClass === 'highway') {
-                badgeText = 'Calle / Avenida'; color = '#64748b'; iconUrl = 'assets/icons/ui_buscar.svg';
+
+            // Filtro extra por área urbana de Mazatlán
+            if (lat < 23.13 || lat > 23.38 || lng < -106.54 || lng > -106.28) return;
+
+            const title = (item.name && item.name.trim())
+                ? item.name.trim()
+                : (isNaN(shortName) ? shortName : (fullName.split(',')[1]?.trim() || shortName));
+            const nTitle = normalizeSearchText(title);
+            if (!nTitle) return;
+
+            const addr = item.address || {};
+            const zoneKey = normalizeSearchText(addr.neighbourhood || addr.suburb || addr.quarter || '');
+            const dedupKey = `${nTitle}|${zoneKey}`;
+            if (seenKeys.has(dedupKey)) return;
+
+            // Evitar tramos duplicados muy cercanos de la misma avenida/calle
+            if (acceptedPoints.some(p => p.nTitle === nTitle && calculateDistanceMeters(lat, lng, p.lat, p.lng) < 120)) {
+                return;
             }
-            
+            // Evitar repetir exactamente una parada local ya mostrada a menos de 70 m
+            if (Array.isArray(allPhysicalStopsList) && allPhysicalStopsList.some(s =>
+                normalizeSearchText(s.name) === nTitle && calculateDistanceMeters(lat, lng, s.latitude, s.longitude) < 70
+            )) {
+                return;
+            }
+
+            seenKeys.add(dedupKey);
+            acceptedPoints.push({ nTitle, lat, lng });
+
+            const inferredType = inferOsmStopType(item.class || item.category, item.type);
+            const config = (typeof getStopIconConfig === 'function')
+                ? getStopIconConfig(title, inferredType)
+                : { iconKey: 'parada', bgColor: '#2563eb', category: 'OpenStreetMap' };
+            const color = safeUserColor(config.bgColor, '#2563eb');
+            const badgeText = config.category && config.category !== 'Parada Oficial del Sistema'
+                ? `${config.category} · OSM`
+                : 'OpenStreetMap';
+            const iconMarkup = (typeof renderStopCategorySvg === 'function')
+                ? renderStopCategorySvg(config.iconKey, 15)
+                : `<img src="assets/icons/ui_ubicacion.svg" alt="" style="filter: brightness(0) invert(1); width: 14px; height: 14px;">`;
+            const subtitle = formatOsmSubtitle(item);
+
             const pointObj = { name: title, lat: lat, lng: lng };
             const actionId = registerSuggestionAction(() => {
                 const encoded = encodeURIComponent(JSON.stringify(pointObj));
                 if (type === 'main') selectColoniaSuggestion(encoded);
                 else selectTripPoint(encoded, type);
             });
-            
+
             html += `
                 <div class="search-suggestion-item" data-osm-suggestion="true" onclick="triggerSuggestionAction(${actionId})">
                     <div class="suggestion-icon" style="background: ${color};">
-                        <img src="${iconUrl}" alt="" style="filter: brightness(0) invert(1); width: 14px; height: 14px;">
+                        ${iconMarkup}
                     </div>
                     <div class="suggestion-content">
                         <div class="suggestion-title">${escapeUserHtml(title)}</div>
                         <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
                             <span class="suggestion-badge" style="background: ${color}15; color: ${color};">${escapeUserHtml(badgeText)}</span>
-                            <span class="suggestion-subtitle" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; display: block;">${escapeUserHtml(fullName)}</span>
+                            <span class="suggestion-subtitle" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; display: block;">${escapeUserHtml(subtitle)}</span>
                         </div>
                     </div>
                 </div>
             `;
         });
-        
+
+        const placeholder = dropdown.querySelector('[data-empty-placeholder="true"]');
         if (html !== '') {
-            const noResults = dropdown.querySelector('div[style*="text-align: center"]');
-            if (noResults && noResults.textContent.includes('No se encontraron')) {
-                noResults.remove();
-            }
-            // Eliminar sugerencias previas de OSM si existieran (para evitar duplicados al teclear rápido)
+            if (placeholder) placeholder.remove();
             dropdown.querySelectorAll('.search-suggestion-item[data-osm-suggestion="true"]').forEach(el => el.remove());
-            
             dropdown.innerHTML += html;
+        } else if (placeholder) {
+            placeholder.innerHTML = `No se encontraron colonias, calles ni destinos en Mazatlán para "<b>${escapeUserHtml(query)}</b>"`;
         }
     } catch (e) {
+        if (e && e.name === 'AbortError') return;
         console.error("OSM Geocoding Error:", e);
+        const dropdown = document.getElementById(dropdownId);
+        const placeholder = dropdown ? dropdown.querySelector('[data-empty-placeholder="true"]') : null;
+        if (placeholder) {
+            placeholder.innerHTML = `Sin resultados locales para "<b>${escapeUserHtml(query)}</b>"`;
+        }
     }
 }
+function getPassingRouteNamesForStop(stop) {
+    return allRoutes
+        .filter(r => r.stopsList && r.stopsList.some(rs => (rs.stop || rs).id === stop.id || (rs.stop || rs).name === stop.name))
+        .map(r => r.name);
+}
+
+function getRankedStopSuggestions(query, limit = 8) {
+    if (typeof allPhysicalStopsList === 'undefined' || !Array.isArray(allPhysicalStopsList)) return [];
+    const results = [];
+    for (const stop of allPhysicalStopsList) {
+        const config = (typeof getStopIconConfig === 'function')
+            ? getStopIconConfig(stop.name, stop.type)
+            : { iconKey: 'parada', iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Destino' };
+        const passingRoutes = getPassingRouteNamesForStop(stop);
+        const extra = `${stop.address || ''} ${stop.type || ''} ${config.category || ''} ${passingRoutes.join(' ')}`;
+        let score = scoreTextMatch(query, stop.name, extra);
+        if (score > 0) {
+            if (passingRoutes.length > 0) score += 6;
+            results.push({ stop, config, passingRoutes, score });
+        }
+    }
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, limit);
+}
+
 function renderSearchSuggestions(q) {
     const dropdown = document.getElementById('search-suggestions');
     if (!dropdown) return;
     
-    const query = (q || '').toLowerCase().trim();
+    const query = (q || '').trim();
     if (query.length < 1) {
         dropdown.style.display = 'none';
         return;
@@ -1133,73 +1451,74 @@ function renderSearchSuggestions(q) {
     let html = '';
     let matchesCount = 0;
     
-    // 2. Buscar en Rutas
+    // 1. Buscar y rankear Rutas + Paradas combinadas por relevancia
+    const combinedEntries = [];
+
     allRoutes.forEach(r => {
-        if (r.name.toLowerCase().includes(query) || (r.description && r.description.toLowerCase().includes(query))) {
-            matchesCount++;
+        const s = scoreTextMatch(query, r.name, `${r.description || ''}`);
+        if (s > 0) {
             const safeColor = safeUserColor(r.color, '#E63E21');
-            html += `
-                <div class="search-suggestion-item" onclick="selectRouteSuggestion(${Number(r.id)})">
-                    <div class="suggestion-icon" style="background: ${safeColor};">
-                        <img src="assets/icons/ui_camion.svg" alt="">
-                    </div>
-                    <div class="suggestion-content">
-                        <div class="suggestion-title">${escapeUserHtml(r.name)}</div>
-                        <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
-                            <span class="suggestion-badge" style="background: ${safeColor}15; color: ${safeColor};">Ruta</span>
-                            <span class="suggestion-subtitle">${escapeUserHtml(r.description || 'Ruta de autobús urbano en Mazatlán')}</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-    });
-    
-    // 3. Buscar en Destinos y Puntos de Interés (allPhysicalStopsList)
-    if (typeof allPhysicalStopsList !== 'undefined' && allPhysicalStopsList.length > 0) {
-        let stopMatches = 0;
-        allPhysicalStopsList.forEach(stop => {
-            if (stopMatches >= 5) return; // Limitar a 5 sugerencias de destinos
-            
-            const nameMatch = stop.name && stop.name.toLowerCase().includes(query);
-            const addrMatch = stop.address && stop.address.toLowerCase().includes(query);
-            const typeMatch = stop.type && stop.type.toLowerCase().includes(query);
-            
-            if (nameMatch || addrMatch || typeMatch) {
-                stopMatches++;
-                matchesCount++;
-                const config = (typeof getStopIconConfig === 'function') ? getStopIconConfig(stop.name, stop.type) : { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Destino' };
-                const safeBg = safeUserColor(config.bgColor);
-                
-                // Determinar qué rutas pasan por o cerca de esta parada
-                const passingRoutes = allRoutes.filter(r => r.stopsList && r.stopsList.some(rs => (rs.stop || rs).id === stop.id || (rs.stop || rs).name === stop.name)).map(r => r.name);
-                const subtitleText = passingRoutes.length > 0 ? `📍 ${stop.address || 'Mazatlán'} — Pasa: ${passingRoutes.join(', ')}` : `📍 ${stop.address || 'Mazatlán, Sinaloa'}`;
-                
-                const actionId = registerSuggestionAction(() => {
-                    selectStopSuggestion(encodeURIComponent(JSON.stringify(stop)));
-                });
-                html += `
-                    <div class="search-suggestion-item" onclick="triggerSuggestionAction(${actionId})">
-                        <div class="suggestion-icon" style="background: ${safeBg};">
-                            <img src="${config.iconUrl}" alt="">
+            combinedEntries.push({
+                score: s + 8,
+                html: `
+                    <div class="search-suggestion-item" onclick="selectRouteSuggestion(${Number(r.id)})">
+                        <div class="suggestion-icon" style="background: ${safeColor};">
+                            <img src="assets/icons/ui_camion.svg" alt="">
                         </div>
                         <div class="suggestion-content">
-                            <div class="suggestion-title">${escapeUserHtml(stop.name)}</div>
+                            <div class="suggestion-title">${escapeUserHtml(r.name)}</div>
                             <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
-                                <span class="suggestion-badge" style="background: ${safeBg}15; color: ${safeBg};">${escapeUserHtml(config.category || 'Destino')}</span>
-                                <span class="suggestion-subtitle">${escapeUserHtml(subtitleText)}</span>
+                                <span class="suggestion-badge" style="background: ${safeColor}15; color: ${safeColor};">Ruta</span>
+                                <span class="suggestion-subtitle">${escapeUserHtml(r.description || 'Ruta de autobús urbano en Mazatlán')}</span>
                             </div>
                         </div>
                     </div>
-                `;
-            }
+                `
+            });
+        }
+    });
+
+    const rankedStops = getRankedStopSuggestions(query, 8);
+    rankedStops.forEach(({ stop, config, passingRoutes, score }) => {
+        const safeBg = safeUserColor(config.bgColor);
+        const subtitleText = passingRoutes.length > 0
+            ? `${stop.address || 'Mazatlán'} — Pasa: ${passingRoutes.slice(0, 4).join(', ')}${passingRoutes.length > 4 ? ` (+${passingRoutes.length - 4})` : ''}`
+            : `${stop.address || 'Mazatlán, Sinaloa'}`;
+        const iconMarkup = (typeof renderStopCategorySvg === 'function')
+            ? renderStopCategorySvg(config.iconKey, 16)
+            : `<img src="${config.iconUrl}" alt="">`;
+        
+        const actionId = registerSuggestionAction(() => {
+            selectStopSuggestion(encodeURIComponent(JSON.stringify(stop)));
         });
-    }
+        combinedEntries.push({
+            score,
+            html: `
+                <div class="search-suggestion-item" onclick="triggerSuggestionAction(${actionId})">
+                    <div class="suggestion-icon" style="background: ${safeBg};">
+                        ${iconMarkup}
+                    </div>
+                    <div class="suggestion-content">
+                        <div class="suggestion-title">${escapeUserHtml(stop.name)}</div>
+                        <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                            <span class="suggestion-badge" style="background: ${safeBg}15; color: ${safeBg};">${escapeUserHtml(config.category || 'Destino')}</span>
+                            <span class="suggestion-subtitle">${escapeUserHtml(subtitleText)}</span>
+                        </div>
+                    </div>
+                </div>
+            `
+        });
+    });
+
+    combinedEntries.sort((a, b) => b.score - a.score);
+    const topEntries = combinedEntries.slice(0, 10);
+    matchesCount = topEntries.length;
+    html = topEntries.map(e => e.html).join('');
     
     if (matchesCount === 0) {
         html = `
-            <div style="padding: 14px; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
-                No se encontraron colonias, destinos ni rutas para "<b>${escapeUserHtml(q)}</b>"
+            <div data-empty-placeholder="true" style="padding: 14px; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
+                Buscando coincidencias o lugares cercanos para "<b>${escapeUserHtml(q)}</b>"...
             </div>
         `;
     }
@@ -1745,41 +2064,36 @@ function setupTripPlannerListeners() {
 function renderTripSuggestions(q, dropdownId, type) {
     const dropdown = document.getElementById(dropdownId);
     if (!dropdown) return;
-    const query = (q || '').toLowerCase().trim();
+    const query = (q || '').trim();
     if (query.length < 1) { dropdown.style.display = 'none'; return; }
     
     let html = '';
-    let count = 0;
-    
-    // Búsqueda de colonias delegada a OSM
-    
-    // Destinos / Paradas
-    if (typeof allPhysicalStopsList !== 'undefined') {
-        allPhysicalStopsList.filter(s => (s.name && s.name.toLowerCase().includes(query)) || (s.address && s.address.toLowerCase().includes(query)) || (s.type && s.type.toLowerCase().includes(query))).slice(0, 4).forEach(stop => {
-            count++;
-            const config = (typeof getStopIconConfig === 'function') ? getStopIconConfig(stop.name, stop.type) : { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Destino' };
-            const safeBg = safeUserColor(config.bgColor);
-            const pointObj = { name: stop.name, lat: stop.latitude, lng: stop.longitude };
-            const actionId = registerSuggestionAction(() => {
-                selectTripPoint(encodeURIComponent(JSON.stringify(pointObj)), type);
-            });
-            html += `
-                <div class="search-suggestion-item" onclick="triggerSuggestionAction(${actionId})">
-                    <div class="suggestion-icon" style="background: ${safeBg};"><img src="${config.iconUrl}" alt=""></div>
-                    <div class="suggestion-content">
-                        <div class="suggestion-title">${escapeUserHtml(stop.name)}</div>
-                        <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
-                            <span class="suggestion-badge" style="background: ${safeBg}15; color: ${safeBg};">${escapeUserHtml(config.category || 'Destino')}</span>
-                            <span class="suggestion-subtitle">📍 ${escapeUserHtml(stop.address || 'Mazatlán')}</span>
-                        </div>
+    const rankedStops = getRankedStopSuggestions(query, 6);
+    rankedStops.forEach(({ stop, config }) => {
+        const safeBg = safeUserColor(config.bgColor);
+        const pointObj = { name: stop.name, lat: stop.latitude, lng: stop.longitude };
+        const iconMarkup = (typeof renderStopCategorySvg === 'function')
+            ? renderStopCategorySvg(config.iconKey, 16)
+            : `<img src="${config.iconUrl}" alt="">`;
+        const actionId = registerSuggestionAction(() => {
+            selectTripPoint(encodeURIComponent(JSON.stringify(pointObj)), type);
+        });
+        html += `
+            <div class="search-suggestion-item" onclick="triggerSuggestionAction(${actionId})">
+                <div class="suggestion-icon" style="background: ${safeBg};">${iconMarkup}</div>
+                <div class="suggestion-content">
+                    <div class="suggestion-title">${escapeUserHtml(stop.name)}</div>
+                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                        <span class="suggestion-badge" style="background: ${safeBg}15; color: ${safeBg};">${escapeUserHtml(config.category || 'Destino')}</span>
+                        <span class="suggestion-subtitle">${escapeUserHtml(stop.address || 'Mazatlán')}</span>
                     </div>
                 </div>
-            `;
-        });
-    }
+            </div>
+        `;
+    });
     
-    if (count === 0) {
-        html = `<div style="padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem;">Sin resultados para "${escapeUserHtml(q)}"</div>`;
+    if (rankedStops.length === 0) {
+        html = `<div data-empty-placeholder="true" style="padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem;">Buscando en lugares cercanos de Mazatlán para "${escapeUserHtml(q)}"...</div>`;
     }
     dropdown.innerHTML = html;
     dropdown.style.display = 'block';
@@ -2581,6 +2895,13 @@ function setupEventListeners() {
     if (infoClose && infoModal) infoClose.addEventListener('click', () => { infoModal.style.display = 'none'; });
     if (infoBtn && infoModal) infoBtn.addEventListener('click', () => { infoModal.style.display = 'none'; });
 
+    document.querySelectorAll('[data-legal-modal]').forEach(el => {
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            showMenuModal(el.getAttribute('data-legal-modal'));
+        });
+    });
+
     const btnNotificaciones = document.getElementById('btn-notificaciones');
     const notificationsModal = document.getElementById('notifications-modal');
     const notificationsClose = document.getElementById('notifications-close');
@@ -2607,11 +2928,45 @@ function setupEventListeners() {
     }
     if (reportClose && reportModal) reportClose.addEventListener('click', () => { reportModal.style.display = 'none'; });
     if (reportForm) {
-        reportForm.addEventListener('submit', (e) => {
+        reportForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (reportModal) reportModal.style.display = 'none';
-            reportForm.reset();
-            showToast('¡Reporte enviado con éxito! Gracias por ayudar a mejorar Don Rutero.');
+            const typeEl = document.getElementById('report-type');
+            const routeEl = document.getElementById('report-route');
+            const descEl = document.getElementById('report-desc');
+            const submitBtn = reportForm.querySelector('button[type="submit"]');
+
+            const type = typeEl ? typeEl.value : 'general';
+            const route = routeEl ? routeEl.value.trim() : '';
+            const description = descEl ? descEl.value.trim() : '';
+
+            if (route.length < 2) {
+                showToast('Indica la ruta, colonia o lugar del reporte.', 'error');
+                return;
+            }
+            if (description.length < 5) {
+                showToast('Describe un poco más el detalle (mínimo 5 caracteres).', 'error');
+                return;
+            }
+
+            const prevLabel = submitBtn ? submitBtn.textContent : '';
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Enviando...';
+            }
+
+            try {
+                await Api.submitReport({ type, route, description });
+                if (reportModal) reportModal.style.display = 'none';
+                reportForm.reset();
+                showToast('¡Reporte guardado! Lo revisaremos en el panel de administración.');
+            } catch (err) {
+                showToast(err.message || 'Error al enviar el reporte', 'error');
+            } finally {
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = prevLabel || 'Enviar reporte';
+                }
+            }
         });
     }
 
@@ -3050,27 +3405,37 @@ const menuContentData = {
     'guia_app': {
         title: '¿Cómo usar Don Rutero?',
         icon: 'assets/icons/ui_buscar.svg',
-        body: '1. Buscador Principal:\nEscribe el nombre de la colonia, hospital o plaza a la que quieres ir. Te mostraremos las rutas que pasan cerca.\n\n2. Planificador Inteligente (¿Cómo llego?):\nPon el lugar donde estás y el lugar a donde vas. El sistema calculará automáticamente qué camión te lleva más directo.\n\n3. Detalles de Ruta:\nToca cualquier camión de la lista para ver su recorrido exacto en el mapa.'
+        body: '1. Explorar rutas y paradas:\nBusca por nombre, colonia, hospital o plaza, o usa los filtros rápidos (Favoritas, Turístico, Centro, Frecuentes). Con el selector Normal / Estudiante cambias al instante el precio mostrado en cada tarjeta.\n\n2. Detalle de ruta, sentido y QR:\nToca cualquier ruta para ver su trazado exacto con flechas de dirección, tarifa, frecuencia estimada, línea de paradas y su botón de código QR o estrella para guardarla en Favoritas.\n\n3. Planificador "¿Cómo Llego?":\nElige tu origen (o toca "Usar mi GPS"), tu destino o un lugar turístico sugerido. Don Rutero te muestra rutas directas o con transbordo, la distancia a caminar, si te conviene cruzar la calle por el sentido del camión y el botón "Voy a bordo" para ir viendo tu próxima parada.\n\n4. Reportes ciudadanos:\nSi detectas un desvío, parada faltante o cambio de recorrido, envíanos un aviso desde "Reportar o Sugerir ruta".'
     },
     'faq': {
         title: 'Preguntas Frecuentes (FAQ)',
         icon: 'assets/icons/ui_campana.svg',
-        body: '• ¿Cuánto cuesta el pasaje?\nTarifa normal: $13 MXN (unidades tradicionales) y hasta $15 MXN (unidades con aire acondicionado).\n\n• ¿Cuánto cuesta el pasaje estudiantil?\n$3.50 MXN presentando tu credencial escolar vigente o Tarjeta Inteligente (TIIE).\n\n• ¿A qué hora dejan de pasar?\nLa gran mayoría inician sus recorridos a las 5:30 AM y terminan su última vuelta alrededor de las 10:00 PM o 10:30 PM. ¡Toma tus precauciones!\n\n• ¿La aplicación es gratis?\nSí, 100% gratuita para apoyar a todos los mazatlecos y turistas.'
+        body: '• ¿Cuántas rutas tiene Don Rutero?\nActualmente contamos con 27 rutas trazadas calle por calle y 420 paradas ubicadas en colonias, Centro, Zona Dorada y vialidades principales de Mazatlán.\n\n• ¿Cuánto cuesta el pasaje?\nTarifa normal: entre $13.00 y $16.00 MXN según la ruta o unidad (tradicional o con aire acondicionado). Tarifa estudiantil: $3.50 MXN presentando credencial vigente o TIIE. Puedes alternar entre Normal y Estudiante directo en la app.\n\n• ¿Qué hago si no hay un camión directo?\nEn la pestaña "¿Cómo Llego?" el planificador también busca opciones con transbordo automático e indica la parada donde bajar y abordar el segundo camión.\n\n• ¿Necesito crear una cuenta para usar la app?\nNo. Todas las rutas, paradas, el planificador y "Voy a bordo" funcionan sin iniciar sesión. La cuenta es gratuita y opcional.\n\n• ¿A qué hora pasan los camiones?\nLa mayoría inicia alrededor de las 5:30 AM y realiza sus últimas vueltas entre las 9:30 PM y 10:30 PM, con intervalos aproximados de 8 a 20 minutos según la ruta.'
     },
     'transporte_mzt': {
         title: 'Guía del Transporte en Mazatlán',
         icon: 'assets/icons/ui_camion.svg',
-        body: 'En Mazatlán operan principalmente dos concesionarios:\n\n- Alianza de Camiones (Verdes / "Puro Sinaloa"):\nOperan unidades modernas, la mayoría con aire acondicionado, cubriendo toda la ciudad y zona costera.\n\n- Águilas del Pacífico (Rojos):\nAutobuses tradicionales que conectan colonias populares con el Centro Histórico y Zona Dorada.'
+        body: 'En Mazatlán operan principalmente dos agrupaciones urbanas:\n\n• Alianza de Camiones (Verdes / "Puro Sinaloa"):\nUnidades modernas —gran parte con aire acondicionado— que cubren corredores costeros (Malecón, Sábalo, Cerritos), Centro y colonias en expansión.\n\n• Águilas del Pacífico (Rojos):\nAutobuses tradicionales con cobertura amplia hacia colonias populares, zona norte, sur, Juárez y Centro Histórico.\n\nConsejos útiles para moverte:\n- Sentido de circulación: muchas rutas regresan por calles paralelas. Activa la ruta y sigue las flechas del mapa para pararte en la acera correcta.\n- Paradas visibles: acerca el mapa para ver los iconos de paraderos y lugares clave.\n- Tarifas y horarios: lleva cambio exacto ($13–$16 MXN general; $3.50 MXN estudiante con credencial/TIIE). El horario habitual va de ~5:30 AM a ~10:30 PM.'
     },
     'acerca': {
         title: 'Acerca de Don Rutero',
         icon: 'assets/icons/ui_ubicacion.svg',
-        body: 'Don Rutero es una plataforma digital de movilidad urbana creada para facilitar los traslados en transporte público en Mazatlán, Sinaloa.\n\nNuestra misión es ayudar tanto a locales como a turistas a navegar la ciudad de forma fácil, rápida y sin perderse en el intento.'
+        body: 'Don Rutero es una plataforma web comunitaria y gratuita de movilidad urbana creada en Mazatlán, Sinaloa, para ayudar tanto a locales como a turistas a moverse en camión con claridad y sin perderse.\n\n¿Qué incluye hoy (Beta v1.0)?\n• Catálogo activo de 27 rutas y 420 paradas georreferenciadas.\n• Trazados con flechas de dirección adaptativas según el zoom.\n• Planificador "¿Cómo Llego?" con rutas directas, transbordos y cálculo de caminata.\n• Modo "Voy a bordo" (simulación o GPS en vivo) y códigos QR compartibles por ruta o parada.\n• Selector de tarifa Normal / Estudiante y lista de Favoritas.\n\nEste proyecto sigue creciendo con las aportaciones de quienes usan el camión todos los días en el puerto.\n\n© 2026 Don Rutero · Todos los derechos reservados.'
+    },
+    'terminos': {
+        title: 'Términos de Uso',
+        icon: 'assets/icons/ui_escudo.svg',
+        body: 'Última actualización: noviembre de 2026\n\n1. Carácter informativo del servicio\nDon Rutero es una plataforma comunitaria gratuita orientada a facilitar la consulta de rutas, paradas y transbordos aproximados del transporte público urbano en Mazatlán, Sinaloa. No está afiliada ni operada de manera oficial por concesionarios, alianzas de camiones ni autoridades de movilidad.\n\n2. Exactitud de rutas, tarifas y horarios\nLos trazados, paraderos, tarifas (general y estudiante) y frecuencias mostradas son referenciales y pueden cambiar por desvíos, obras viales, clima, tránsito o ajustes operativos sin previo aviso.\n\n3. Uso adecuado y cuentas\nEl usuario se compromete a utilizar el sitio de forma lícita, sin realizar peticiones automatizadas abusivas, intentar vulnerar la seguridad o suplantar identidad. Las sugerencias o reportes enviados pueden usarse para mejorar el catálogo de rutas.\n\n4. Propiedad intelectual y atribuciones\n© 2026 Don Rutero. Todos los derechos reservados. El nombre, logotipo, diseño de interfaz y código de la plataforma pertenecen a sus autores. La cartografía base y geocodificación corresponden a OpenStreetMap y sus colaboradores.\n\n5. Limitación de responsabilidad\nLa plataforma se ofrece "tal cual" en fase Beta. Las decisiones de traslado corresponden únicamente al usuario.'
+    },
+    'privacidad': {
+        title: 'Aviso de Privacidad',
+        icon: 'assets/icons/ui_candado_check.svg',
+        body: 'Última actualización: noviembre de 2026\n\n1. Datos personales que recopilamos\n• Navegación pública: puedes consultar rutas, paradas y el planificador sin crear cuenta ni proporcionar datos personales.\n• Registro opcional de cuenta: si decides registrarte, almacenamos únicamente tu nombre de usuario, correo electrónico y tu contraseña cifrada (hash seguro BCrypt) para gestionar tu sesión.\n\n2. Uso de tu ubicación (GPS)\nCuando utilizas "Mi ubicación" o el modo "Voy a bordo (GPS)", las coordenadas de tu dispositivo se procesan localmente en tu navegador para centrar el mapa o identificar paradas cercanas. No guardamos ni rastreamos tu historial de ubicaciones en nuestros servidores.\n\n3. Almacenamiento local del navegador\nGuardamos en el almacenamiento local (localStorage) tu sesión activa y tus rutas favoritas para recordarlas entre visitas.\n\n4. Servicios de terceros\nPara mostrar el mapa y buscar direcciones por nombre, tu navegador solicita mosaicos y resultados de OpenStreetMap / Nominatim conforme a sus políticas. Don Rutero no vende ni comparte tus datos con terceros con fines publicitarios.\n\n5. Contacto y eliminación de cuenta\nSi deseas solicitar la eliminación o corrección de tu cuenta o tienes dudas sobre privacidad, puedes contactarnos mediante la opción "Reportar o Sugerir ruta" en el menú.'
     },
     'legal': {
-        title: 'Privacidad y Avisos Legales',
-        icon: 'assets/icons/ui_filtro.svg',
-        body: 'La información mostrada es referencial y puede sufrir cambios sin previo aviso.\n\nPrivacidad: Tu ubicación GPS solo se usa de forma local en tu dispositivo y nunca se comparte con terceros.'
+        title: 'Términos de Uso y Privacidad',
+        icon: 'assets/icons/ui_escudo.svg',
+        body: '© 2026 Don Rutero · Todos los derechos reservados.\nConsulta las secciones dedicadas de "Términos de uso" y "Aviso de privacidad" en el menú principal.'
     }
 };
 
@@ -3107,7 +3472,10 @@ function showMenuModal(type) {
     const iconEl = document.querySelector('#info-modal-icon img');
     
     if (titleEl) titleEl.textContent = data.title;
-    if (bodyEl) bodyEl.textContent = data.body;
+    if (bodyEl) {
+        bodyEl.textContent = data.body;
+        bodyEl.scrollTop = 0;
+    }
     if (iconEl) iconEl.src = data.icon;
     
     if (modal) {

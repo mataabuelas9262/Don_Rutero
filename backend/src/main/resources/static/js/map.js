@@ -248,43 +248,131 @@ function drawRouteLine(coordinates, color = '#6366f1', options = {}) {
     return polyline;
 }
 
+const STOP_GLYPH_PATHS = {
+    escuela: '<path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c0 2 2.7 3.5 6 3.5s6-1.5 6-3.5v-5"/>',
+    hospital: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 7v10M7 12h10"/>',
+    farmacia: '<path d="M10.5 20.5 19.5 11.5a4.95 4.95 0 0 0-7-7l-9 9a4.95 4.95 0 0 0 7 7Z"/><path d="m8.5 8.5 7 7"/>',
+    comercio: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
+    transporte: '<path d="M8 6v6"/><path d="M16 6v6"/><path d="M2 12h20"/><path d="M4 18V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v11"/><circle cx="7.5" cy="18.5" r="1.5"/><circle cx="16.5" cy="18.5" r="1.5"/>',
+    hotel: '<path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/>',
+    parque: '<path d="M12 22v-5"/><path d="M12 17c-4 0-6.5-2.6-6.5-6 2.5 0 4.2-1.5 6.5-5 2.3 3.5 4 5 6.5 5 0 3.4-2.5 6-6.5 6Z"/>',
+    turistico: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3"/>',
+    iglesia: '<path d="M12 2v6"/><path d="M9 5h6"/><path d="M5 22V12l7-4 7 4v10"/><path d="M10 22v-5h4v5"/>',
+    deportivo: '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
+    banco: '<path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M12 2 2 7h20L12 2Z"/>',
+    gasolinera: '<path d="M3 22V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v17"/><path d="M3 12h11"/><path d="M14 7h2a2 2 0 0 1 2 2v6a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9l-3-3"/>',
+    restaurante: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
+    refaccionaria: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/>',
+    colonia: '<polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/>',
+    calle: '<path d="M12 2v20"/><path d="M6 5h11l2 2.5L17 10H6z"/><path d="M18 14H7l-2 2.5L7 19h11z"/>',
+    parada: '<circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 0-8 8c0 5.4 7 11.5 7.35 11.8a1 1 0 0 0 1.3 0C13 21.5 20 15.4 20 10a8 8 0 0 0-8-8Z"/>'
+};
+
+function renderStopCategorySvg(iconKey, sizePx = 15) {
+    const inner = STOP_GLYPH_PATHS[iconKey] || STOP_GLYPH_PATHS.parada;
+    const sz = Number(sizePx) || 15;
+    return `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="#ffffff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none; display:block; flex-shrink:0;">${inner}</svg>`;
+}
+
 // Helper para obtener configuración vectorial SVG y color de marca según la categoría del lugar en Mazatlán (sin emojis)
 function getStopIconConfig(stopName, stopType) {
-    const type = (stopType || '').toLowerCase();
+    const type = (stopType || '').toLowerCase().trim();
     const name = (stopName || '').toLowerCase();
-    
-    if (type === 'escuela' || name.includes('uas') || name.includes('itmaz') || name.includes('upsin') || name.includes('ico') || name.includes('universidad') || name.includes('tecnológico') || name.includes('campus') || name.includes('escuela') || name.includes('colegio') || name.includes('instituto') || name.includes('cbtis') || name.includes('cetmar') || name.includes('conalep')) {
-        return { iconUrl: 'assets/icons/pin_escuela.svg', bgColor: '#2563EB', category: 'Centro Educativo / Campus' };
+
+    // 1. Priorizar el tipo explícito guardado en base de datos o inferido de OSM
+    if (type === 'escuela') {
+        return { iconKey: 'escuela', iconUrl: 'assets/icons/pin_escuela.svg', bgColor: '#2563EB', category: 'Centro Educativo / Campus' };
     }
-    if (type === 'hospital' || type === 'salud' || name.includes('hospital') || name.includes('imss') || name.includes('issste') || name.includes('sharp') || name.includes('martiniano') || name.includes('clínica') || name.includes('médico') || name.includes('salud') || name.includes('cruz roja') || name.includes('alhma')) {
-        return { iconUrl: 'assets/icons/pin_hospital.svg', bgColor: '#DC2626', category: 'Hospital / Centro Médico' };
+    if (type === 'hospital') {
+        return { iconKey: 'hospital', iconUrl: 'assets/icons/pin_hospital.svg', bgColor: '#DC2626', category: 'Hospital / Centro Médico' };
     }
-    if (type === 'centro_comercial' || type === 'comercio' || type === 'mercado' || name.includes('mercado') || name.includes('plaza') || name.includes('galerías') || name.includes('sendero') || name.includes('acaya') || name.includes('soriana') || name.includes('ley') || name.includes('walmart') || name.includes('tienda') || name.includes('comercial') || name.includes('home depot') || name.includes('sams club') || name.includes('bodega aurrera') || name.includes('office depot')) {
-        return { iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#059669', category: 'Plaza Comercial / Mercado' };
+    if (type === 'salud' || type === 'farmacia' || type === 'laboratorio' || type === 'veterinaria') {
+        return { iconKey: 'farmacia', iconUrl: 'assets/icons/pin_farmacia.svg', bgColor: '#E11D48', category: 'Salud / Farmacia' };
     }
-    if (type === 'transporte' || name.includes('central') || name.includes('terminal') || name.includes('autobuses') || name.includes('cam') || name.includes('marítima') || name.includes('ferry') || name.includes('ferries') || name.includes('aeropuerto') || name.includes('puerto') || name.includes('embarcadero') || name.includes('cruceros')) {
-        return { iconUrl: 'assets/icons/pin_puerto.svg', bgColor: '#D97706', category: 'Terminal de Transporte' };
+    if (type === 'restaurante' || type === 'comida' || type === 'comida_rapida') {
+        return { iconKey: 'restaurante', iconUrl: 'assets/icons/pin_restaurante.svg', bgColor: '#F43F5E', category: 'Restaurante / Comida' };
     }
-    if (type === 'hotel' || type === 'playa' || name.includes('hotel') || name.includes('riu') || name.includes('resort') || name.includes('playa') || name.includes('cerritos') || name.includes('dorada') || name.includes('olas altas') || name.includes('marina') || name.includes('yates') || name.includes('venadito') || name.includes('pueblo bonito') || name.includes('brujas')) {
-        return { iconUrl: 'assets/icons/pin_hotel.svg', bgColor: '#0891B2', category: 'Zona Costera / Hotelera' };
+    if (type === 'hotel' || type === 'playa') {
+        return { iconKey: 'hotel', iconUrl: 'assets/icons/pin_hotel.svg', bgColor: '#0891B2', category: 'Hotel / Zona Costera' };
     }
-    if (type === 'turistico' || type === 'parque' || type === 'plaza' || type === 'iglesia' || type === 'deportivo' || type === 'gobierno' || type === 'entretenimiento' || name.includes('parque') || name.includes('acuario') || name.includes('estadio') || name.includes('teodoro') || name.includes('encanto') || name.includes('glorieta') || name.includes('plazuela') || name.includes('monumento') || name.includes('monos') || name.includes('clavadista') || name.includes('catedral') || name.includes('teatro') || name.includes('mirador') || name.includes('malecón') || name.includes('cinépolis') || name.includes('cinemex') || name.includes('museo') || name.includes('palacio')) {
-        return { iconUrl: 'assets/icons/pin_parque.svg', bgColor: '#7C3AED', category: 'Punto Emblemático / Turismo' };
+    if (type === 'parque' || type === 'plaza') {
+        return { iconKey: 'parque', iconUrl: 'assets/icons/pin_parque.svg', bgColor: '#15803D', category: 'Parque / Plaza Pública' };
     }
-    
-        if (type === 'banco' || name.includes('bbva') || name.includes('banorte') || name.includes('santander') || name.includes('banamex') || name.includes('scotiabank') || name.includes('banco')) {
-        return { iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#10B981', category: 'Sucursal Bancaria' };
+    if (type === 'turistico' || type === 'entretenimiento') {
+        return { iconKey: 'turistico', iconUrl: 'assets/icons/pin_museo.svg', bgColor: '#7C3AED', category: 'Punto Turístico / Cultura' };
     }
-    if (type === 'gasolinera' || name.includes('gasolinera') || name.includes('pemex') || name.includes('gasmaz') || name.includes('gas station')) {
-        return { iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#F59E0B', category: 'Estación de Servicio' };
+    if (type === 'iglesia' || type === 'gobierno' || type === 'tramite' || type === 'biblioteca') {
+        return { iconKey: 'iglesia', iconUrl: 'assets/icons/pin_museo.svg', bgColor: '#4F46E5', category: type === 'iglesia' ? 'Templo / Iglesia' : 'Gobierno / Servicio Público' };
     }
-    if (type === 'restaurante' || type === 'comida' || name.includes('restaurante') || name.includes('taquería') || name.includes('mariscos') || name.includes('bistro') || name.includes('café') || name.includes('cervecería')) {
-        return { iconUrl: 'assets/icons/pin_parque.svg', bgColor: '#F43F5E', category: 'Restaurante / Comida' };
+    if (type === 'deportivo' || type === 'gimnasio') {
+        return { iconKey: 'deportivo', iconUrl: 'assets/icons/pin_parque.svg', bgColor: '#0D9488', category: 'Deporte / Gimnasio' };
     }
-    if (type === 'empresa' || type === 'industria' || name.includes('industrial') || name.includes('s.a. de c.v.') || name.includes('grupo') || name.includes('envases')) {
-        return { iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#4B5563', category: 'Empresa / Zona Industrial' };
+    if (type === 'centro_comercial' || type === 'comercio' || type === 'mercado' || type === 'tienda_conveniencia' || type === 'servicio') {
+        return { iconKey: 'comercio', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#059669', category: 'Comercio / Plaza Comercial' };
     }
-    return { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Parada Oficial del Sistema' };
+    if (type === 'transporte') {
+        return { iconKey: 'transporte', iconUrl: 'assets/icons/pin_puerto.svg', bgColor: '#D97706', category: 'Terminal / Transporte' };
+    }
+    if (type === 'banco') {
+        return { iconKey: 'banco', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#10B981', category: 'Sucursal Bancaria' };
+    }
+    if (type === 'gasolinera') {
+        return { iconKey: 'gasolinera', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#F59E0B', category: 'Estación de Servicio' };
+    }
+    if (type === 'refaccionaria' || type === 'ferreteria' || type === 'empresa' || type === 'industria') {
+        return { iconKey: 'refaccionaria', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#4B5563', category: 'Refaccionaria / Industria' };
+    }
+    if (type === 'colonia') {
+        return { iconKey: 'colonia', iconUrl: 'assets/icons/ui_ubicacion.svg', bgColor: '#0EA5E9', category: 'Colonia / Zona' };
+    }
+    if (type === 'calle') {
+        return { iconKey: 'calle', iconUrl: 'assets/icons/ui_buscar.svg', bgColor: '#64748B', category: 'Calle / Vialidad' };
+    }
+
+    // 2. Respaldo heurístico por nombre cuando el tipo es genérico ("lugar", "zona", "parada", vacío)
+    if (name.includes('uas') || name.includes('itmaz') || name.includes('upsin') || name.includes('ico') || name.includes('universidad') || name.includes('tecnológico') || name.includes('campus') || name.includes('escuela') || name.includes('colegio') || name.includes('instituto') || name.includes('cbtis') || name.includes('cetmar') || name.includes('conalep')) {
+        return { iconKey: 'escuela', iconUrl: 'assets/icons/pin_escuela.svg', bgColor: '#2563EB', category: 'Centro Educativo / Campus' };
+    }
+    if (name.includes('hospital') || name.includes('imss') || name.includes('issste') || name.includes('sharp') || name.includes('martiniano') || name.includes('clínica') || name.includes('médico') || name.includes('cruz roja') || name.includes('alhma')) {
+        return { iconKey: 'hospital', iconUrl: 'assets/icons/pin_hospital.svg', bgColor: '#DC2626', category: 'Hospital / Centro Médico' };
+    }
+    if (name.includes('farmacia')) {
+        return { iconKey: 'farmacia', iconUrl: 'assets/icons/pin_farmacia.svg', bgColor: '#E11D48', category: 'Salud / Farmacia' };
+    }
+    if (name.includes('parque') || name.includes('plazuela')) {
+        return { iconKey: 'parque', iconUrl: 'assets/icons/pin_parque.svg', bgColor: '#15803D', category: 'Parque / Plaza Pública' };
+    }
+    if (name.includes('mercado') || name.includes('plaza') || name.includes('galerías') || name.includes('sendero') || name.includes('acaya') || name.includes('soriana') || name.includes('ley') || name.includes('walmart') || name.includes('tienda') || name.includes('comercial') || name.includes('home depot') || name.includes('sams club') || name.includes('bodega aurrera') || name.includes('office depot') || name.includes('coppel') || name.includes('oxxo') || name.includes('kiosko')) {
+        return { iconKey: 'comercio', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#059669', category: 'Comercio / Plaza Comercial' };
+    }
+    if (name.includes('central') || name.includes('terminal') || name.includes('autobuses') || name.includes('marítima') || name.includes('ferry') || name.includes('ferries') || name.includes('aeropuerto') || name.includes('puerto') || name.includes('embarcadero') || name.includes('cruceros')) {
+        return { iconKey: 'transporte', iconUrl: 'assets/icons/pin_puerto.svg', bgColor: '#D97706', category: 'Terminal / Transporte' };
+    }
+    if (name.includes('hotel') || name.includes('riu') || name.includes('resort') || name.includes('playa') || name.includes('cerritos') || name.includes('dorada') || name.includes('olas altas') || name.includes('marina') || name.includes('yates') || name.includes('venadito') || name.includes('pueblo bonito') || name.includes('brujas')) {
+        return { iconKey: 'hotel', iconUrl: 'assets/icons/pin_hotel.svg', bgColor: '#0891B2', category: 'Hotel / Zona Costera' };
+    }
+    if (name.includes('acuario') || name.includes('monumento') || name.includes('monos') || name.includes('clavadista') || name.includes('teatro') || name.includes('mirador') || name.includes('malecón') || name.includes('cinépolis') || name.includes('cinemex') || name.includes('museo')) {
+        return { iconKey: 'turistico', iconUrl: 'assets/icons/pin_museo.svg', bgColor: '#7C3AED', category: 'Punto Turístico / Cultura' };
+    }
+    if (name.includes('catedral') || name.includes('iglesia') || name.includes('templo') || name.includes('palacio') || name.includes('ayuntamiento')) {
+        return { iconKey: 'iglesia', iconUrl: 'assets/icons/pin_museo.svg', bgColor: '#4F46E5', category: 'Templo / Gobierno' };
+    }
+    if (name.includes('estadio') || name.includes('teodoro') || name.includes('encanto') || name.includes('cancha') || name.includes('gimnasio') || name.includes('gym') || name.includes('deportivo') || name.includes('skate')) {
+        return { iconKey: 'deportivo', iconUrl: 'assets/icons/pin_parque.svg', bgColor: '#0D9488', category: 'Deporte / Gimnasio' };
+    }
+    if (name.includes('bbva') || name.includes('banorte') || name.includes('santander') || name.includes('banamex') || name.includes('scotiabank') || name.includes('banco')) {
+        return { iconKey: 'banco', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#10B981', category: 'Sucursal Bancaria' };
+    }
+    if (name.includes('gasolinera') || name.includes('pemex') || name.includes('gasmaz') || name.includes('gas station')) {
+        return { iconKey: 'gasolinera', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#F59E0B', category: 'Estación de Servicio' };
+    }
+    if (name.includes('restaurante') || name.includes('taquería') || name.includes('mariscos') || name.includes('bistro') || name.includes('café') || name.includes('cervecería') || name.includes('panamá') || name.includes('sushi') || name.includes('pizza')) {
+        return { iconKey: 'restaurante', iconUrl: 'assets/icons/pin_restaurante.svg', bgColor: '#F43F5E', category: 'Restaurante / Comida' };
+    }
+    if (name.includes('industrial') || name.includes('s.a. de c.v.') || name.includes('grupo') || name.includes('envases') || name.includes('refaccion') || name.includes('autozone')) {
+        return { iconKey: 'refaccionaria', iconUrl: 'assets/icons/pin_tienda.svg', bgColor: '#4B5563', category: 'Refaccionaria / Industria' };
+    }
+    return { iconKey: 'parada', iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Parada Oficial del Sistema' };
 }
 
 function updateRouteStopsVisibility() {
@@ -375,10 +463,10 @@ function drawRouteStops(stops, color = '#6366f1') {
             className: 'custom-stop-marker',
             html: isEndpoint
                 ? `<div style="position: relative; background-color: ${markerBg}; border: 2.5px solid white; width: 24px; height: 24px; border-radius: 50%; box-shadow: 0 3px 10px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;">
-                     <img src="${config.iconUrl}" alt="" style="width: 13px; height: 13px; filter: brightness(0) invert(1); pointer-events: none;">
+                     ${renderStopCategorySvg(config.iconKey, 13)}
                    </div>`
                 : `<div style="background-color: ${markerBg}; border: 2px solid white; width: 22px; height: 22px; border-radius: 50%; box-shadow: 0 2px 7px rgba(0,0,0,0.32); display: flex; align-items: center; justify-content: center;">
-                     <img src="${config.iconUrl}" alt="" style="width: 12px; height: 12px; filter: brightness(0) invert(1); pointer-events: none;">
+                     ${renderStopCategorySvg(config.iconKey, 12)}
                    </div>`,
             iconSize: isEndpoint ? [24, 24] : [22, 22],
             iconAnchor: isEndpoint ? [12, 12] : [11, 11]
@@ -479,7 +567,7 @@ async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
             const defaultIcon = L.divIcon({
                 className: 'physical-stop-marker',
                 html: `<div style="background-color: ${config.bgColor}; border: 2px solid #ffffff; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                         <img src="${config.iconUrl}" alt="" style="width: 12px; height: 12px; filter: brightness(0) invert(1); pointer-events: none;">
+                         ${renderStopCategorySvg(config.iconKey, 12)}
                        </div>`,
                 iconSize: [22, 22],
                 iconAnchor: [11, 11]

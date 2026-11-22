@@ -167,6 +167,19 @@ const Api = {
         return await response.json();
     },
 
+    submitReport: async (reportData) => {
+        const response = await fetch(`${API_BASE_URL}/routes/reports`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(reportData)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'No se pudo enviar el reporte');
+        }
+        return data;
+    },
+
     // -----------------------------------------------------
     // GESTIÓN DE ADMINISTRACIÓN (PROTEGIDAS)
     // -----------------------------------------------------
@@ -290,6 +303,34 @@ const Api = {
             body: JSON.stringify({ coordinates, stopIds })
         });
         await handleAdminError(response, 'Error al guardar la geometría de la ruta');
+        return await response.json();
+    },
+
+    getAdminReports: async () => {
+        const response = await fetch(`${API_BASE_URL}/admin/reports`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al cargar reportes ciudadanos');
+        return await response.json();
+    },
+
+    updateAdminReport: async (id, status, adminNote) => {
+        const response = await fetch(`${API_BASE_URL}/admin/reports/${id}`, {
+            method: 'PATCH',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ status, adminNote })
+        });
+        await handleAdminError(response, 'Error al actualizar el reporte');
+        return await response.json();
+    },
+
+    deleteAdminReport: async (id) => {
+        const response = await fetch(`${API_BASE_URL}/admin/reports/${id}`, {
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al eliminar el reporte');
         return await response.json();
     }
 };

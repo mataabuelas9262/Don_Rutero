@@ -6,11 +6,13 @@ let adminRoutes = [];
 let selectedRouteId = null;
 
 // Filtros y pestaña activa del panel admin
-let activeAdminTab = 'routes'; // 'routes' | 'stops'
+let activeAdminTab = 'routes'; // 'routes' | 'stops' | 'reports'
 let routeStatusFilter = 'all'; // 'all' | 'active' | 'inactive'
 let routeSearchText = '';
 let stopStatusFilter = 'all';  // 'all' | 'orphan'
 let stopSearchText = '';
+let adminReportsData = [];
+let reportStatusFilter = 'all'; // 'all' | 'pendiente' | 'en_revision' | 'resuelto' | 'descartado'
 
 // Estados del mapa en edición
 let drawingMode = false;       // Trazar línea de calles
@@ -159,8 +161,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2. Inicializar el mapa de Leaflet
     const map = initLeafletMap('map');
 
-    // 3. Cargar rutas y paradas físicas (en paralelo)
-    await Promise.all([refreshAdminRoutes(), refreshPhysicalStops()]);
+    // 3. Cargar rutas, paradas físicas y reportes ciudadanos (en paralelo)
+    await Promise.all([refreshAdminRoutes(), refreshPhysicalStops(), refreshAdminReports()]);
 
     // 4. Configurar eventos del panel
     setupAdminEventListeners(map);
@@ -186,16 +188,174 @@ function updateAdminStats() {
 }
 
 function switchAdminTab(tab) {
-    activeAdminTab = tab === 'stops' ? 'stops' : 'routes';
+    activeAdminTab = (tab === 'stops' || tab === 'reports') ? tab : 'routes';
     const routesTab = document.getElementById('admin-tab-routes');
     const stopsTab = document.getElementById('admin-tab-stops');
+    const reportsTab = document.getElementById('admin-tab-reports');
     const routesPanel = document.getElementById('admin-routes-panel');
     const stopsPanel = document.getElementById('admin-stops-panel');
+    const reportsPanel = document.getElementById('admin-reports-panel');
 
     if (routesTab) routesTab.classList.toggle('active', activeAdminTab === 'routes');
     if (stopsTab) stopsTab.classList.toggle('active', activeAdminTab === 'stops');
+    if (reportsTab) reportsTab.classList.toggle('active', activeAdminTab === 'reports');
     if (routesPanel) routesPanel.style.display = activeAdminTab === 'routes' ? 'flex' : 'none';
     if (stopsPanel) stopsPanel.style.display = activeAdminTab === 'stops' ? 'flex' : 'none';
+    if (reportsPanel) reportsPanel.style.display = activeAdminTab === 'reports' ? 'flex' : 'none';
+}
+
+const REPORT_TYPE_LABELS = {
+    desvio: 'Desvío / Obra',
+    nueva_parada: 'Nueva parada',
+    falta_ruta: 'Falta ruta',
+    correccion: 'Corrección',
+    general: 'Sugerencia'
+};
+
+const REPORT_STATUS_META = {
+    pendiente: { label: 'Pendiente', cls: 'status-pendiente' },
+    en_revision: { label: 'En revisión', cls: 'status-revision' },
+    resuelto: { label: 'Resuelto', cls: 'status-resuelto' },
+    descartado: { label: 'Descartado', cls: 'status-descartado' }
+};
+
+async function refreshAdminReports() {
+    try {
+        adminReportsData = await Api.getAdminReports();
+        if (!Array.isArray(adminReportsData)) adminReportsData = [];
+        updateAdminReportsBadge();
+        renderAdminReports();
+    } catch (err) {
+        console.warn('No se pudieron cargar reportes ciudadanos:', err.message);
+    }
+}
+
+function updateAdminReportsBadge() {
+    const badge = document.getElementById('admin-reports-badge');
+    if (!badge) return;
+    const pendingCount = adminReportsData.filter(r => r.status === 'pendiente').length;
+    badge.textContent = String(pendingCount);
+    badge.style.display = pendingCount > 0 ? 'inline-flex' : 'none';
+}
+
+function renderAdminReports() {
+    const container = document.getElementById('admin-report-list');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const filtered = adminReportsData.filter(r => reportStatusFilter === 'all' || r.status === reportStatusFilter);
+    if (filtered.length === 0) {
+        const msg = adminReportsData.length === 0
+            ? 'Todavía no hay reportes ciudadanos registrados.'
+            : 'No hay reportes en este estado.';
+        container.innerHTML = `<div style="padding: 18px 12px; text-align: center; color: var(--text-muted); font-size: 0.82rem;">${escapeAdminHtml(msg)}</div>`;
+        return;
+    }
+
+    filtered.forEach(rep => {
+        const typeLabel = REPORT_TYPE_LABELS[rep.type] || 'Reporte';
+        const stMeta = REPORT_STATUS_META[rep.status] || REPORT_STATUS_META.pendiente;
+        const dateStr = rep.createdAt ? new Date(rep.createdAt).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
+        const reporterText = rep.reporterUsername ? `Por: ${rep.reporterUsername}` : 'Anónimo';
+
+        const card = document.createElement('div');
+        card.className = 'admin-report-card';
+        card.innerHTML = `
+            <div class="admin-report-head">
+                <span class="admin-report-type">${escapeAdminHtml(typeLabel)}</span>
+                <span class="admin-report-status ${stMeta.cls}">${escapeAdminHtml(stMeta.label)}</span>
+            </div>
+            <div class="admin-report-title">${escapeAdminHtml(rep.routeOrPlace)}</div>
+            <div class="admin-report-desc">${escapeAdminHtml(rep.description)}</div>
+            <div class="admin-report-meta">
+                <span>${escapeAdminHtml(reporterText)}</span>
+                ${dateStr ? `<span>${escapeAdminHtml(dateStr)}</span>` : ''}
+            </div>
+            ${rep.adminNote ? `<div class="admin-report-note"><strong>Nota:</strong> ${escapeAdminHtml(rep.adminNote)}</div>` : ''}
+            <div class="admin-report-note-editor" style="display: none; margin-top: 8px; gap: 6px; flex-direction: column;">
+                <textarea class="form-control admin-report-note-input" rows="2" maxlength="500" placeholder="Nota interna sobre cómo se atendió o por qué se descartó..." style="font-size: 0.76rem; padding: 6px 8px;">${escapeAdminHtml(rep.adminNote || '')}</textarea>
+                <div style="display: flex; gap: 6px;">
+                    <button type="button" class="route-actions-btn" data-action="save-note" style="font-size: 0.72rem; padding: 4px 8px; color: var(--primary); font-weight: 700;">Guardar nota</button>
+                    <button type="button" class="route-actions-btn" data-action="cancel-note" style="font-size: 0.72rem; padding: 4px 8px;">Cancelar</button>
+                </div>
+            </div>
+            <div class="admin-report-actions">
+                ${rep.status !== 'en_revision' ? `<button type="button" class="route-actions-btn" data-status="en_revision">Revisar</button>` : ''}
+                ${rep.status !== 'resuelto' ? `<button type="button" class="route-actions-btn" data-status="resuelto" style="color: var(--success);">Resolver</button>` : ''}
+                ${rep.status !== 'descartado' ? `<button type="button" class="route-actions-btn" data-status="descartado">Descartar</button>` : ''}
+                <button type="button" class="route-actions-btn" data-action="locate-osm" title="Buscar este lugar en OpenStreetMap">Ubicar OSM</button>
+                <button type="button" class="route-actions-btn" data-action="toggle-note">Nota</button>
+                <button type="button" class="route-actions-btn" data-action="delete" style="color: var(--danger);">Eliminar</button>
+            </div>
+        `;
+
+        card.querySelectorAll('[data-status]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const nextStatus = btn.getAttribute('data-status');
+                try {
+                    const updated = await Api.updateAdminReport(rep.id, nextStatus, rep.adminNote || '');
+                    const idx = adminReportsData.findIndex(x => x.id === rep.id);
+                    if (idx >= 0) adminReportsData[idx] = updated;
+                    updateAdminReportsBadge();
+                    renderAdminReports();
+                    showToast('Estado del reporte actualizado.');
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            });
+        });
+
+        card.querySelector('[data-action="locate-osm"]').addEventListener('click', () => {
+            const osmInput = document.getElementById('admin-osm-search-input');
+            if (osmInput) {
+                osmInput.value = rep.routeOrPlace || '';
+                osmInput.focus();
+                searchAdminOSMPlaces(osmInput.value);
+            }
+        });
+
+        const noteEditor = card.querySelector('.admin-report-note-editor');
+        const noteInput = card.querySelector('.admin-report-note-input');
+        card.querySelector('[data-action="toggle-note"]').addEventListener('click', () => {
+            if (noteEditor) noteEditor.style.display = noteEditor.style.display === 'none' ? 'flex' : 'none';
+        });
+        card.querySelector('[data-action="cancel-note"]').addEventListener('click', () => {
+            if (noteEditor) noteEditor.style.display = 'none';
+        });
+        card.querySelector('[data-action="save-note"]').addEventListener('click', async () => {
+            try {
+                const nextNote = noteInput ? noteInput.value.trim() : '';
+                const updated = await Api.updateAdminReport(rep.id, rep.status, nextNote);
+                const idx = adminReportsData.findIndex(x => x.id === rep.id);
+                if (idx >= 0) adminReportsData[idx] = updated;
+                renderAdminReports();
+                showToast('Nota guardada.');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        card.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+            const ok = await showAdminConfirm({
+                title: '¿Eliminar reporte?',
+                message: `Se borrará permanentemente el reporte sobre "${rep.routeOrPlace}".`,
+                confirmText: 'Sí, eliminar',
+                danger: true
+            });
+            if (!ok) return;
+            try {
+                await Api.deleteAdminReport(rep.id);
+                adminReportsData = adminReportsData.filter(x => x.id !== rep.id);
+                updateAdminReportsBadge();
+                renderAdminReports();
+                showToast('Reporte eliminado.');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        container.appendChild(card);
+    });
 }
 
 function setAdminPanelCollapsed(collapsed) {
@@ -585,10 +745,13 @@ async function refreshPhysicalStops() {
             const config = (typeof getStopIconConfig === 'function')
                 ? getStopIconConfig(stop.name, stop.type)
                 : { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569' };
+            const stopIconHtml = (typeof renderStopCategorySvg === 'function')
+                ? renderStopCategorySvg(config.iconKey, 12)
+                : `<img src="${config.iconUrl}" alt="" style="width: 12px; height: 12px; filter: brightness(0) invert(1); pointer-events: none;">`;
             const stopIcon = L.divIcon({
                 className: 'physical-stop-marker-admin',
                 html: `<div style="background-color: ${config.bgColor}; border: 2px solid white; width: 22px; height: 22px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center; cursor: pointer;" id="physical-stop-${Number(stop.id)}">
-                         <img src="${config.iconUrl}" alt="" style="width: 12px; height: 12px; filter: brightness(0) invert(1); pointer-events: none;">
+                         ${stopIconHtml}
                        </div>`,
                 iconSize: [22, 22],
                 iconAnchor: [11, 11]
@@ -1697,10 +1860,13 @@ async function searchAdminOSMPlaces(query) {
                 ? getStopIconConfig(title, stopType)
                 : { iconUrl: 'assets/icons/ui_ubicacion.svg', bgColor: '#059669', category: 'Lugar OSM' };
 
+            const osmIconHtml = (typeof renderStopCategorySvg === 'function')
+                ? renderStopCategorySvg(config.iconKey, 15)
+                : `<img src="${config.iconUrl}" alt="" style="filter: brightness(0) invert(1); width: 14px; height: 14px;">`;
             return `
                 <div class="search-suggestion-item" data-osm-idx="${idx}">
                     <div class="suggestion-icon" style="background: ${config.bgColor};">
-                        <img src="${config.iconUrl}" alt="" style="filter: brightness(0) invert(1); width: 14px; height: 14px;">
+                        ${osmIconHtml}
                     </div>
                     <div class="suggestion-content">
                         <div class="suggestion-title">${escapeAdminHtml(title)}</div>
@@ -2266,8 +2432,24 @@ function setupAdminEventListeners(map) {
     // Pestañas y filtros locales de Rutas / Paradas + botón rápido de huérfanas
     const tabRoutes = document.getElementById('admin-tab-routes');
     const tabStops = document.getElementById('admin-tab-stops');
+    const tabReports = document.getElementById('admin-tab-reports');
     if (tabRoutes) tabRoutes.addEventListener('click', () => switchAdminTab('routes'));
     if (tabStops) tabStops.addEventListener('click', () => switchAdminTab('stops'));
+    if (tabReports) {
+        tabReports.addEventListener('click', () => {
+            switchAdminTab('reports');
+            refreshAdminReports();
+        });
+    }
+
+    document.querySelectorAll('#admin-report-status-filters [data-report-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            reportStatusFilter = btn.getAttribute('data-report-filter') || 'all';
+            document.querySelectorAll('#admin-report-status-filters .admin-chip').forEach(c => c.classList.remove('active'));
+            btn.classList.add('active');
+            renderAdminReports();
+        });
+    });
 
     const routeFilterInput = document.getElementById('admin-route-filter');
     if (routeFilterInput) {

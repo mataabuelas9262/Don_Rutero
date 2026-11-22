@@ -224,6 +224,16 @@
                     </div>
                 </div>
 
+                <!-- Footer legal discreto -->
+                <footer class="sidebar-legal-footer" aria-label="Información legal y derechos de autor">
+                    <div class="sidebar-legal-copy">© 2026 Don Rutero · Mazatlán</div>
+                    <div class="sidebar-legal-links">
+                        <button type="button" class="sidebar-legal-link" data-legal-modal="terminos">Términos de uso</button>
+                        <span aria-hidden="true">·</span>
+                        <button type="button" class="sidebar-legal-link" data-legal-modal="privacidad">Aviso de privacidad</button>
+                    </div>
+                </footer>
+
             </div>
         </aside>
 
@@ -301,8 +311,8 @@
                         <img src="assets/icons/ui_camion.svg" alt="">
                     </div>
                     <div>
-                        <h4 class="notice-title">10 rutas trazadas en Mazatlán</h4>
-                        <p class="notice-body">Ya puedes consultar recorridos calle por calle (Pradera, Ébano, Milenio, Sábalo Centro, Mañanitas, San Joaquín, Jabalíes, Urías, Sirena y Zapata) y guardar tus favoritas.</p>
+                        <h4 class="notice-title">27 rutas y 420 paradas en Mazatlán</h4>
+                        <p class="notice-body">Consulta recorridos calle por calle con flechas de dirección, guarda tus rutas favoritas y comparte cualquier ruta o parada mediante código QR.</p>
                         <span class="notice-time">Horario habitual: 5:30 AM – 10:30 PM</span>
                     </div>
                 </div>
@@ -459,11 +469,18 @@
                 <span class="menu-item-label">Acerca de Don Rutero</span>
             </div>
 
-            <div class="menu-item" onclick="showMenuModal('legal')">
+            <div class="menu-item" onclick="showMenuModal('terminos')">
                 <div class="menu-item-icon">
-                    <img src="assets/icons/ui_filtro.svg" alt="">
+                    <img src="assets/icons/ui_escudo.svg" alt="">
                 </div>
-                <span class="menu-item-label">Avisos Legales</span>
+                <span class="menu-item-label">Términos de uso</span>
+            </div>
+
+            <div class="menu-item" onclick="showMenuModal('privacidad')">
+                <div class="menu-item-icon">
+                    <img src="assets/icons/ui_candado_check.svg" alt="">
+                </div>
+                <span class="menu-item-label">Aviso de privacidad</span>
             </div>
 
             <div id="menu-donate-btn" class="menu-item menu-item-donate" role="button" tabindex="0">
@@ -487,14 +504,15 @@
             </div>
 
             <div class="menu-footer-version">
-                Don Rutero · v1.0
+                © 2026 Don Rutero · Todos los derechos reservados<br>
+                <span style="font-weight:500; letter-spacing:0.4px; opacity:0.85;">Mazatlán, Sin. · Beta v1.0</span>
             </div>
         </div>
     </aside>
 
     <!-- Modal de Información del Menú -->
     <div id="info-modal" class="form-overlay" style="display:none;">
-        <div class="form-card" style="max-width: 440px;">
+        <div class="form-card" style="max-width: 480px;">
             <button id="info-close" class="form-close">
                 <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
             </button>
@@ -504,7 +522,7 @@
                 </div>
                 <h2 id="info-modal-title" style="font-family:var(--font-heading); font-size:1.25rem; font-weight:800; color:var(--text-primary); margin:0;">Título</h2>
             </div>
-            <div id="info-modal-body" style="font-size:0.9rem; color:var(--text-secondary); line-height:1.6; margin-bottom:20px; white-space:pre-line;">
+            <div id="info-modal-body" style="font-size:0.88rem; color:var(--text-secondary); line-height:1.65; margin-bottom:20px; white-space:pre-line; max-height:56vh; overflow-y:auto; padding-right:6px;">
                 Contenido
             </div>
             <button id="info-modal-btn" class="btn btn-primary" style="width:100%; background:var(--primary);">Entendido</button>
@@ -602,6 +620,7 @@
                         </div>
                     </div>
                     <button type="submit" id="register-submit-btn" class="btn btn-primary btn-full" style="margin-top:4px;">Siguiente: Verificar correo</button>
+                    <p class="auth-legal-note">Al crear tu cuenta aceptas los <button type="button" class="auth-legal-link" data-legal-modal="terminos">Términos de uso</button> y el <button type="button" class="auth-legal-link" data-legal-modal="privacidad">Aviso de privacidad</button>.</p>
                 </form>
                 <div class="form-footer" style="margin-top: 4px;">
                     ¿Ya tienes cuenta? <a href="#" id="open-login">Inicia sesión</a>
