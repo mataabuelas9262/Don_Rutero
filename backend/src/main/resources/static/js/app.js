@@ -2173,10 +2173,10 @@ function getRouteBoundingBox(coords) {
     return { minLat, maxLat, minLng, maxLng };
 }
 
-function findBestTransferPoint(routeA, routeB) {
+function findCandidateTransferPoints(routeA, routeB, maxCandidates = 6) {
     const coordsA = routeA.coordinatesList || [];
     const coordsB = routeB.coordinatesList || [];
-    if (coordsA.length === 0 || coordsB.length === 0) return null;
+    if (coordsA.length === 0 || coordsB.length === 0) return [];
 
     // Descarte rápido por bounding box (+ ~500m de margen)
     const pad = 0.005;
@@ -2184,10 +2184,19 @@ function findBestTransferPoint(routeA, routeB) {
     const boxB = getRouteBoundingBox(coordsB);
     if (boxA.maxLat + pad < boxB.minLat || boxB.maxLat + pad < boxA.minLat ||
         boxA.maxLng + pad < boxB.minLng || boxB.maxLng + pad < boxA.minLng) {
-        return null;
+        return [];
     }
 
-    let best = null;
+    const buckets = new Map();
+    const recordCandidate = (cand) => {
+        if (cand.walkDist > 400) return;
+        const key = `${Math.round(cand.midLat / 0.004)}_${Math.round(cand.midLng / 0.004)}`;
+        const prev = buckets.get(key);
+        if (!prev || cand.walkDist < prev.walkDist) {
+            buckets.set(key, cand);
+        }
+    };
+
     const checkVerticesAgainstSegments = (pts, segs, swapped) => {
         for (let i = 0; i < pts.length; i++) {
             const p = pts[i];
@@ -2197,7 +2206,7 @@ function findBestTransferPoint(routeA, routeB) {
                 const s2 = segs[j + 1];
                 if (s1.latitude == null || s1.longitude == null || s2.latitude == null || s2.longitude == null) continue;
                 const proj = closestPointOnSegment(p.latitude, p.longitude, s1.latitude, s1.longitude, s2.latitude, s2.longitude);
-                if (!best || proj.dist < best.walkDist) {
+                if (proj.dist <= 400) {
                     const latA = swapped ? proj.lat : p.latitude;
                     const lngA = swapped ? proj.lng : p.longitude;
                     const latB = swapped ? p.latitude : proj.lat;
@@ -2206,13 +2215,13 @@ function findBestTransferPoint(routeA, routeB) {
                     const tA = swapped ? proj.t : 0;
                     const segB = swapped ? Math.min(i, coordsB.length - 2) : j;
                     const tB = swapped ? 0 : proj.t;
-                    best = {
+                    recordCandidate({
                         latA, lngA, latB, lngB,
                         segA, tA, segB, tB,
                         midLat: (latA + latB) / 2,
                         midLng: (lngA + lngB) / 2,
                         walkDist: proj.dist
-                    };
+                    });
                 }
             }
         }
@@ -2221,8 +2230,13 @@ function findBestTransferPoint(routeA, routeB) {
     checkVerticesAgainstSegments(coordsA, coordsB, false);
     checkVerticesAgainstSegments(coordsB, coordsA, true);
 
-    if (!best || best.walkDist > 400) return null;
-    return best;
+    return Array.from(buckets.values())
+        .sort((a, b) => a.walkDist - b.walkDist)
+        .slice(0, maxCandidates);
+}
+
+function findBestTransferPoint(routeA, routeB) {
+    return findCandidateTransferPoints(routeA, routeB, 1)[0] || null;
 }
 
 function estimateTripMinutes(walkMeters, busMeters, transferCount = 0) {
@@ -2314,69 +2328,105 @@ function calculateTripRoute() {
                     normalPrice: getRouteNormalPrice(m.route),
                     studentPrice: getRouteStudentPrice(m.route),
                     totalPrice: getActiveRoutePrice(m.route),
-                    score: totalWalk + (isFinite(bestPair.forwardDist) ? bestPair.forwardDist * 0.08 : 0)
+                    score: totalWalk + (isFinite(bestPair.forwardDist) ? bestPair.forwardDist * 0.08 : 50000)
                 };
             })
             .sort((a, b) => a.score - b.score);
 
-        // 2. Opciones con 1 transbordo (2 camiones) cuando no hay directas o las directas requieren caminar mucho
-        const needTransfers = directOptions.length === 0 || (directOptions[0].origInfo.dist + directOptions[0].destInfo.dist > 800);
+        // 2. Opciones con 1 transbordo (2 camiones) solo si no hay directa o si ahorran caminata real sin rodeos absurdos
+        const bestDirect = directOptions[0] || null;
+        const bestDirectWalk = bestDirect ? (bestDirect.origInfo.dist + bestDirect.destInfo.dist) : Infinity;
+        const bestDirectBusDist = (bestDirect && isFinite(bestDirect.onBusDist)) ? bestDirect.onBusDist : Infinity;
+        const needTransfers = directOptions.length === 0 || bestDirectWalk > 800;
         const transferOptions = [];
         if (needTransfers) {
+            const TRANSFER_PENALTY = 1800;
             const origRoutes = routeMetrics.filter(m => m.origInfo.dist <= 1000);
             const destRoutes = routeMetrics.filter(m => m.destInfo.dist <= 1000);
 
             for (const candA of origRoutes) {
                 for (const candB of destRoutes) {
                     if (candA.route.id === candB.route.id) continue;
-                    const transfer = findBestTransferPoint(candA.route, candB.route);
-                    if (!transfer) continue;
-
-                    const transferPtA = { lat: transfer.latA, lng: transfer.lngA, segIdx: transfer.segA, t: transfer.tA };
-                    const transferPtB = { lat: transfer.latB, lng: transfer.lngB, segIdx: transfer.segB, t: transfer.tB };
+                    const candidateTransfers = findCandidateTransferPoints(candA.route, candB.route, 6);
+                    if (candidateTransfers.length === 0) continue;
 
                     const oCandsA = candA.origCandidates.length > 0 ? candA.origCandidates : [candA.origInfo];
-                    let bestOrigA = candA.origInfo;
-                    let bestSegA = null;
-                    let bestDistA = Infinity;
-                    let bestCostA = Infinity;
-                    for (const oc of oCandsA) {
-                        const loopA = getForwardLoopMetrics(candA.route.coordinatesList, oc, transferPtA);
-                        const rideA = isFinite(loopA.forwardDist) ? loopA.forwardDist * 0.28 : 999999;
-                        const costA = oc.dist * 2.2 + rideA;
-                        if (costA < bestCostA) {
-                            bestCostA = costA;
-                            bestOrigA = oc;
-                            bestSegA = loopA.segmentCoords;
-                            bestDistA = loopA.forwardDist;
-                        }
-                    }
-
                     const dCandsB = candB.destCandidates.length > 0 ? candB.destCandidates : [candB.destInfo];
-                    let bestDestB = candB.destInfo;
-                    let bestSegB = null;
-                    let bestDistB = Infinity;
-                    let bestCostB = Infinity;
-                    for (const dc of dCandsB) {
-                        const loopB = getForwardLoopMetrics(candB.route.coordinatesList, transferPtB, dc);
-                        const rideB = isFinite(loopB.forwardDist) ? loopB.forwardDist * 0.28 : 999999;
-                        const costB = dc.dist * 2.2 + rideB;
-                        if (costB < bestCostB) {
-                            bestCostB = costB;
-                            bestDestB = dc;
-                            bestSegB = loopB.segmentCoords;
-                            bestDistB = loopB.forwardDist;
+                    let bestPairOption = null;
+
+                    for (const transfer of candidateTransfers) {
+                        const transferPtA = { lat: transfer.latA, lng: transfer.lngA, segIdx: transfer.segA, t: transfer.tA };
+                        const transferPtB = { lat: transfer.latB, lng: transfer.lngB, segIdx: transfer.segB, t: transfer.tB };
+
+                        let bestOrigA = candA.origInfo;
+                        let bestSegA = null;
+                        let bestDistA = Infinity;
+                        let bestCostA = Infinity;
+                        for (const oc of oCandsA) {
+                            const loopA = getForwardLoopMetrics(candA.route.coordinatesList, oc, transferPtA);
+                            const rideA = isFinite(loopA.forwardDist) ? loopA.forwardDist * 0.28 : 999999;
+                            const costA = oc.dist * 2.2 + rideA;
+                            if (costA < bestCostA) {
+                                bestCostA = costA;
+                                bestOrigA = oc;
+                                bestSegA = loopA.segmentCoords;
+                                bestDistA = loopA.forwardDist;
+                            }
+                        }
+
+                        let bestDestB = candB.destInfo;
+                        let bestSegB = null;
+                        let bestDistB = Infinity;
+                        let bestCostB = Infinity;
+                        for (const dc of dCandsB) {
+                            const loopB = getForwardLoopMetrics(candB.route.coordinatesList, transferPtB, dc);
+                            const rideB = isFinite(loopB.forwardDist) ? loopB.forwardDist * 0.28 : 999999;
+                            const costB = dc.dist * 2.2 + rideB;
+                            if (costB < bestCostB) {
+                                bestCostB = costB;
+                                bestDestB = dc;
+                                bestSegB = loopB.segmentCoords;
+                                bestDistB = loopB.forwardDist;
+                            }
+                        }
+
+                        if (!isFinite(bestDistA) || !isFinite(bestDistB)) continue;
+
+                        const totalBusDist = bestDistA + bestDistB;
+                        const totalWalk = bestOrigA.dist + transfer.walkDist + bestDestB.dist;
+                        const candidateScore = bestOrigA.dist + transfer.walkDist * 1.5 + bestDestB.dist + totalBusDist * 0.08 + TRANSFER_PENALTY;
+
+                        if (!bestPairOption || candidateScore < bestPairOption.score) {
+                            bestPairOption = {
+                                transfer,
+                                transferPtB,
+                                bestOrigA,
+                                bestDestB,
+                                bestSegA,
+                                bestSegB,
+                                totalBusDist,
+                                totalWalk,
+                                score: candidateScore
+                            };
                         }
                     }
 
+                    if (!bestPairOption) continue;
+
+                    // Si ya hay ruta directa, descartar transbordos que no ahorran caminata real o dan un rodeo exagerado
+                    if (bestDirect) {
+                        const walkSaved = bestDirectWalk - bestPairOption.totalWalk;
+                        if (walkSaved < 350) continue;
+                        if (isFinite(bestDirectBusDist) && bestPairOption.totalBusDist > bestDirectBusDist * 1.65 + 4000) continue;
+                    }
+
+                    const { transfer, transferPtB, bestOrigA, bestDestB, bestSegA, bestSegB, totalBusDist, totalWalk, score } = bestPairOption;
                     const transferLabel =
                         findNearestStopLabel(candA.route, transfer.midLat, transfer.midLng) ||
                         findNearestStopLabel(candB.route, transfer.midLat, transfer.midLng);
 
                     const dirInfoA = getBoardingDirectionInfo(candA.route, bestOrigA, selectedOrigin.lat, selectedOrigin.lng, oCandsA);
                     const dirInfoB = getBoardingDirectionInfo(candB.route, transferPtB, transfer.latA, transfer.lngA, []);
-                    const totalBusDist = (isFinite(bestDistA) ? bestDistA : 0) + (isFinite(bestDistB) ? bestDistB : 0);
-                    const totalWalk = bestOrigA.dist + transfer.walkDist + bestDestB.dist;
                     const estimatedMin = estimateTripMinutes(totalWalk, totalBusDist > 0 ? totalBusDist : Infinity, 1);
 
                     transferOptions.push({
@@ -2398,7 +2448,7 @@ function calculateTripRoute() {
                         normalPrice: getRouteNormalPrice(candA.route) + getRouteNormalPrice(candB.route),
                         studentPrice: getRouteStudentPrice(candA.route) + getRouteStudentPrice(candB.route),
                         totalPrice: getActiveRoutePrice(candA.route) + getActiveRoutePrice(candB.route),
-                        score: bestOrigA.dist + transfer.walkDist * 1.5 + bestDestB.dist + 450
+                        score
                     });
                 }
             }
