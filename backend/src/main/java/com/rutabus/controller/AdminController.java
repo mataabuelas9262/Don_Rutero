@@ -8,6 +8,7 @@ import com.rutabus.repository.RouteCoordinateRepository;
 import com.rutabus.repository.RouteRepository;
 import com.rutabus.repository.RouteStopRepository;
 import com.rutabus.repository.StopRepository;
+import com.rutabus.service.PublicCatalogService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
@@ -44,6 +45,9 @@ public class AdminController {
 
     @Autowired
     private RouteCoordinateRepository routeCoordinateRepository;
+
+    @Autowired
+    private PublicCatalogService publicCatalogService;
 
     private String validateAndSanitizeRoute(Route route) {
         if (route == null) return "Datos de ruta requeridos.";
@@ -246,6 +250,7 @@ public class AdminController {
         String err = validateAndSanitizeRoute(route);
         if (err != null) return ResponseEntity.badRequest().body(Map.of("error", err));
         Route savedRoute = routeRepository.save(route);
+        publicCatalogService.invalidateCache();
         return ResponseEntity.status(HttpStatus.CREATED).body(savedRoute);
     }
 
@@ -261,7 +266,9 @@ public class AdminController {
             route.setPrice(routeDetails.getPrice());
             route.setStudentPrice(routeDetails.getStudentPrice());
             route.setFrequencyMinutes(routeDetails.getFrequencyMinutes());
-            return ResponseEntity.ok(routeRepository.save(route));
+            Route saved = routeRepository.save(route);
+            publicCatalogService.invalidateCache();
+            return ResponseEntity.ok(saved);
         }).orElse(ResponseEntity.notFound().build());
     }
 
@@ -276,6 +283,7 @@ public class AdminController {
             }
             route.setActive(nextActive);
             Route saved = routeRepository.save(route);
+            publicCatalogService.invalidateCache();
             return ResponseEntity.ok(Map.of(
                     "id", saved.getId(),
                     "active", Boolean.TRUE.equals(saved.getActive())
@@ -290,6 +298,7 @@ public class AdminController {
             routeCoordinateRepository.deleteByRouteId(id);
             routeStopRepository.deleteByRouteId(id);
             routeRepository.delete(route);
+            publicCatalogService.invalidateCache();
             return ResponseEntity.ok(Map.of("message", "Ruta eliminada correctamente"));
         }).orElse(ResponseEntity.notFound().build());
     }
@@ -304,6 +313,7 @@ public class AdminController {
         String err = validateAndSanitizeStop(stop);
         if (err != null) return ResponseEntity.badRequest().body(Map.of("error", err));
         Stop savedStop = stopRepository.save(stop);
+        publicCatalogService.invalidateCache();
         return ResponseEntity.status(HttpStatus.CREATED).body(savedStop);
     }
 
@@ -317,7 +327,9 @@ public class AdminController {
             stop.setLongitude(stopDetails.getLongitude());
             if (stopDetails.getType() != null) stop.setType(stopDetails.getType());
             if (stopDetails.getAddress() != null) stop.setAddress(stopDetails.getAddress());
-            return ResponseEntity.ok(stopRepository.save(stop));
+            Stop saved = stopRepository.save(stop);
+            publicCatalogService.invalidateCache();
+            return ResponseEntity.ok(saved);
         }).orElse(ResponseEntity.notFound().build());
     }
 
@@ -327,6 +339,7 @@ public class AdminController {
         return stopRepository.findById(id).map(stop -> {
             routeStopRepository.deleteByStopId(id);
             stopRepository.delete(stop);
+            publicCatalogService.invalidateCache();
             return ResponseEntity.ok(Map.of("message", "Parada eliminada correctamente"));
         }).orElse(ResponseEntity.notFound().build());
     }
@@ -416,6 +429,7 @@ public class AdminController {
             routeStopRepository.saveAll(routeStopsList);
         }
 
+        publicCatalogService.invalidateCache();
         return ResponseEntity.ok(Map.of("message", "Trazado y paradas de la ruta actualizados exitosamente"));
     }
 

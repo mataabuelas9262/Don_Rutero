@@ -125,6 +125,12 @@ const Api = {
     // -----------------------------------------------------
     // CONSULTA DE RUTAS Y PARADAS (PÚBLICAS)
     // -----------------------------------------------------
+    getBootstrap: async () => {
+        const response = await fetch(`${API_BASE_URL}/routes/bootstrap`);
+        if (!response.ok) throw new Error('Error al cargar catálogo inicial');
+        return await response.json();
+    },
+
     getRoutes: async () => {
         const response = await fetch(`${API_BASE_URL}/routes`);
         if (!response.ok) throw new Error('Error al obtener las rutas');

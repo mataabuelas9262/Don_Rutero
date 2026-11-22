@@ -250,8 +250,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupMobileBottomSheet();
     await Promise.all([
         Auth.init(),
-        loadRoutesList(),
-        loadAllPhysicalStopsOnMap()
+        loadBootstrapData()
     ]);
     setupEventListeners();
     handleDeepLinkParams();
@@ -260,6 +259,48 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ----------------------------------------------------------
 // CARGA Y RENDERIZADO DE RUTAS
 // ----------------------------------------------------------
+
+function hydrateRoutesFromBootstrap(data) {
+    const routes = Array.isArray(data?.routes) ? data.routes : [];
+    const stops = Array.isArray(data?.stops) ? data.stops : [];
+    const coordsByRoute = data?.coordsByRoute || {};
+    const stopIdsByRoute = data?.stopIdsByRoute || {};
+    const stopById = new Map(stops.map(s => [s.id, s]));
+
+    routes.forEach((route) => {
+        const rawCoords = coordsByRoute[String(route.id)] || [];
+        route.coordinatesList = rawCoords.map(pair => ({
+            latitude: pair[0],
+            longitude: pair[1]
+        }));
+
+        const stopIds = stopIdsByRoute[String(route.id)] || [];
+        route.stopsList = stopIds
+            .map((stopId, idx) => {
+                const stop = stopById.get(stopId);
+                return stop ? { stopOrder: idx + 1, stop } : null;
+            })
+            .filter(Boolean);
+    });
+
+    allRoutes = routes;
+    renderRoutes(allRoutes);
+    return stops;
+}
+
+async function loadBootstrapData() {
+    try {
+        const data = await Api.getBootstrap();
+        const stops = hydrateRoutesFromBootstrap(data);
+        await loadAllPhysicalStopsOnMap(stops);
+    } catch (bootstrapErr) {
+        console.warn('Bootstrap fallback a carga tradicional:', bootstrapErr);
+        await Promise.all([
+            loadRoutesList(),
+            loadAllPhysicalStopsOnMap()
+        ]);
+    }
+}
 
 async function loadRoutesList() {
     try {

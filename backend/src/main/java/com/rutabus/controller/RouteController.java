@@ -8,11 +8,13 @@ import com.rutabus.repository.RouteCoordinateRepository;
 import com.rutabus.repository.RouteRepository;
 import com.rutabus.repository.RouteStopRepository;
 import com.rutabus.repository.StopRepository;
+import com.rutabus.service.PublicCatalogService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/routes")
@@ -29,6 +31,15 @@ public class RouteController {
 
     @Autowired
     private RouteCoordinateRepository routeCoordinateRepository;
+
+    @Autowired
+    private PublicCatalogService publicCatalogService;
+
+    // Carga inicial consolidada en una sola respuesta gzippeada (rutas activas, paradas, coordenadas y secuencias)
+    @GetMapping("/bootstrap")
+    public Map<String, Object> getPublicBootstrap() {
+        return publicCatalogService.getBootstrapPayload();
+    }
 
     // Obtener todas las rutas activas
     @GetMapping

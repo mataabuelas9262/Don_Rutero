@@ -463,12 +463,14 @@ function getOrResetPhysicalStopsLayer() {
 }
 
 // Carga y dibuja todas las paradas físicas del sistema (con clustering + iconos SVG por categoría)
-async function loadAllPhysicalStopsOnMap() {
+async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
     try {
         const targetLayer = getOrResetPhysicalStopsLayer();
         if (!targetLayer) return;
 
-        allPhysicalStopsList = await Api.getAllStops();
+        allPhysicalStopsList = Array.isArray(prefetchedStops)
+            ? prefetchedStops
+            : await Api.getAllStops();
         const markersToAdd = [];
 
         allPhysicalStopsList.forEach(stop => {
