@@ -11,6 +11,8 @@ services:
         value: prod
       - key: EXPOSE_DEMO_CODES
         value: "false"
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: "false"
       - key: JPA_DDL_AUTO
         value: validate
       - key: DB_URL

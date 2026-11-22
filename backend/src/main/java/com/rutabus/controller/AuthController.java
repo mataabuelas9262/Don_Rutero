@@ -39,6 +39,9 @@ public class AuthController {
     @Value("${app.auth.expose-demo-codes:false}")
     private boolean exposeDemoCodes;
 
+    @Value("${app.auth.require-email-verification:true}")
+    private boolean requireEmailVerification;
+
     @Autowired
     private AuthenticationManager authenticationManager;
 
@@ -113,20 +116,22 @@ public class AuthController {
             return ResponseEntity.badRequest().body(Map.of("error", "La contraseña debe tener entre 8 y 128 caracteres."));
         }
 
-        VerificationEntry pending = pendingCodes.get(emailStr);
-        long now = System.currentTimeMillis();
-        if (pending == null || now > pending.expiresAt) {
-            pendingCodes.remove(emailStr);
-            return ResponseEntity.badRequest().body(Map.of("error", "El código de verificación expiró o no ha sido solicitado."));
-        }
-        pending.attempts++;
-        if (pending.attempts > MAX_CODE_ATTEMPTS) {
-            pendingCodes.remove(emailStr);
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                    .body(Map.of("error", "Demasiados intentos fallidos de código. Solicita uno nuevo."));
-        }
-        if (!pending.code.equals(codeInput)) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Código de verificación incorrecto."));
+        if (requireEmailVerification) {
+            VerificationEntry pending = pendingCodes.get(emailStr);
+            long now = System.currentTimeMillis();
+            if (pending == null || now > pending.expiresAt) {
+                pendingCodes.remove(emailStr);
+                return ResponseEntity.badRequest().body(Map.of("error", "El código de verificación expiró o no ha sido solicitado."));
+            }
+            pending.attempts++;
+            if (pending.attempts > MAX_CODE_ATTEMPTS) {
+                pendingCodes.remove(emailStr);
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                        .body(Map.of("error", "Demasiados intentos fallidos de código. Solicita uno nuevo."));
+            }
+            if (!pending.code.equals(codeInput)) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Código de verificación incorrecto."));
+            }
         }
 
         if (userRepository.existsByUsername(username)) {
@@ -151,6 +156,11 @@ public class AuthController {
                 .body(Map.of("message", "Usuario registrado exitosamente."));
     }
 
+    @GetMapping("/config")
+    public ResponseEntity<?> getAuthConfig() {
+        return ResponseEntity.ok(Map.of("requireEmailVerification", requireEmailVerification));
+    }
+
     @PostMapping("/send-verification")
     public ResponseEntity<?> sendVerificationCode(@RequestBody Map<String, String> request, HttpServletRequest httpReq) {
         if (isRateLimited(httpReq, "send-verification")) {
@@ -165,6 +175,13 @@ public class AuthController {
         }
         if (userRepository.existsByEmail(email)) {
             return ResponseEntity.badRequest().body(Map.of("error", "No fue posible procesar el registro con ese correo."));
+        }
+
+        if (!requireEmailVerification) {
+            return ResponseEntity.ok(Map.of(
+                    "skipVerification", true,
+                    "message", "Registro directo habilitado en modo beta."
+            ));
         }
 
         String code = String.valueOf(secureRandom.nextInt(900000) + 100000);

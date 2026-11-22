@@ -46,6 +46,12 @@ const Api = {
     // -----------------------------------------------------
     // AUTENTICACIÓN
     // -----------------------------------------------------
+    getAuthConfig: async () => {
+        const response = await fetch(`${API_BASE_URL}/auth/config`);
+        if (!response.ok) return { requireEmailVerification: true };
+        return await response.json();
+    },
+
     login: async (username, password) => {
         const response = await fetch(`${API_BASE_URL}/auth/login`, {
             method: 'POST',

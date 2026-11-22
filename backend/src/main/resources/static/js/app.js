@@ -2819,6 +2819,7 @@ function setupEventListeners() {
     const regErrorText = document.getElementById('register-error-text');
     const verifyErrorBanner = document.getElementById('verify-error-banner');
     const verifyErrorText = document.getElementById('verify-error-text');
+    const regSubmitBtn = document.getElementById('register-submit-btn');
 
     function resetRegisterModal() {
         if (regErrorBanner) regErrorBanner.style.display = 'none';
@@ -2829,11 +2830,19 @@ function setupEventListeners() {
         if (verifyForm) verifyForm.reset();
     }
 
-    if (openRegister) openRegister.addEventListener('click', (e) => { 
+    if (openRegister) openRegister.addEventListener('click', async (e) => { 
         e.preventDefault(); 
         loginModal.style.display = 'none'; 
         resetRegisterModal();
-        registerModal.style.display = 'flex'; 
+        registerModal.style.display = 'flex';
+        if (regSubmitBtn) {
+            try {
+                const cfg = await Api.getAuthConfig();
+                regSubmitBtn.textContent = (cfg && cfg.requireEmailVerification === false)
+                    ? 'Crear cuenta'
+                    : 'Siguiente: Verificar correo';
+            } catch (_) {}
+        }
     });
     if (openLogin) openLogin.addEventListener('click', (e) => { 
         e.preventDefault(); 
@@ -2878,8 +2887,18 @@ function setupEventListeners() {
             }
 
             try {
-                // Solicitar código de verificación al backend
+                // Solicitar código de verificación al backend (en Beta sin correo, registra directo)
                 const res = await Api.sendVerificationCode(email);
+                if (res && res.skipVerification) {
+                    await Api.register(email, u, p, '');
+                    showToast('¡Cuenta creada con éxito! Ya puedes iniciar sesión.');
+                    registerModal.style.display = 'none';
+                    resetRegisterModal();
+                    if (loginErrorBanner) loginErrorBanner.style.display = 'none';
+                    loginModal.style.display = 'flex';
+                    return;
+                }
+
                 window._tempRegEmail = email;
                 window._tempRegUsername = u;
                 window._tempRegPassword = p;
