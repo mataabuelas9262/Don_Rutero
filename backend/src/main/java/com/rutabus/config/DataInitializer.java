@@ -5,15 +5,21 @@ import com.rutabus.entity.User;
 import com.rutabus.repository.StopRepository;
 import com.rutabus.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 
 @Component
 public class DataInitializer implements CommandLineRunner {
+
+    @Value("${ADMIN_DEFAULT_PASSWORD:}")
+    private String adminDefaultPassword;
 
     @Autowired
     private UserRepository userRepository;
@@ -26,16 +32,21 @@ public class DataInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        // Verificar si existe una cuenta de administrador inicial
+        // Crear cuenta administradora inicial solo si no existe (sin exponer contraseñas fijas en el código)
         if (!userRepository.existsByUsername("admin") && !userRepository.existsByEmail("admin@rutabus.com")) {
+            String initialPass = this.adminDefaultPassword;
+            if (initialPass == null || initialPass.trim().isEmpty()) {
+                byte[] buf = new byte[12];
+                new SecureRandom().nextBytes(buf);
+                initialPass = Base64.getUrlEncoder().withoutPadding().encodeToString(buf);
+                System.out.println("🔐 [DataInitializer] Cuenta 'admin' creada con clave inicial aleatoria (defina ADMIN_DEFAULT_PASSWORD para fijarla en despliegue).");
+            }
             User admin = new User();
             admin.setUsername("admin");
             admin.setEmail("admin@rutabus.com");
-            admin.setPassword(passwordEncoder.encode("admin123"));
+            admin.setPassword(passwordEncoder.encode(initialPass));
             admin.setRole("ROLE_ADMIN");
             userRepository.save(admin);
-            System.out.println(
-                    "✅ [DataInitializer] Cuenta de administrador por defecto creada: admin@rutabus.com / admin123");
         }
 
         // Limpia completa y carga del catálogo geográfico verificado desde el CSV
@@ -72,7 +83,7 @@ public class DataInitializer implements CommandLineRunner {
                 new Stop(30L, "El Venadito (Centro)", 23.198631, -106.427448, "turistico", "Calle Gral. Ángel Flores 206, Centro"),
                 new Stop(31L, "Valentinos (Malecón)", 23.238356, -106.445794, "turistico", "1304 Av. Camarón Sábalo, Zona Dorada"),
                 new Stop(32L, "Playa Olas Altas", 23.196363, -106.426693, "playa", "Olas Altas, Centro"),
-                new Stop(33L, "Playas de Mazatlán (Zona Dorada)", 23.292033, -106.479141, "playa", "Quintas del Mar, 82112 Mazatlán"),
+                new Stop(33L, "Playas de Mazatlán (Zona Dorada)", 23.244428, -106.452477, "playa", "Av. Camarón Sábalo, Zona Dorada, 82110 Mazatlán"),
                 new Stop(34L, "Playa Cerritos", 23.272556, -106.466542, "playa", "Playa Cerritos, Sinaloa"),
                 new Stop(36L, "Playa Norte", 23.2140, -106.4255, "playa", "Paseo Claussen, Centro"),
                 new Stop(37L, "Parque Ciudades Hermanas", 23.204910, -106.428286, "parque", "Av. Zaragoza 318C, Centro"),
@@ -247,48 +258,8 @@ public class DataInitializer implements CommandLineRunner {
                 new Stop(231L, "Crucero Colosio y Múnich (Juan Pablo II)", 23.245210, -106.395340, "lugar", ""),
                 new Stop(232L, "Glorieta del Ceviche", 23.242315, -106.435010, "lugar", ""),
                 new Stop(235L, "Monumento a la Familia", 23.240510, -106.438520, "lugar", ""),
-                new Stop(237L, "Junta Municipal de Agua Potable y Alcantarillado de Mazatlán", 23.2329, -106.4062, "lugar", ""),
-                new Stop(238L, "Oficina JUMAPAM | Distribución - Producción", 23.2329, -106.4062, "lugar", ""),
-                new Stop(239L, "Jumapam Nelson", 23.2329, -106.4062, "lugar", ""),
-                new Stop(240L, "Jumapam Esperanza", 23.2329, -106.4062, "lugar", ""),
-                new Stop(241L, "Jumapam Rincón de Urias", 23.2329, -106.4062, "lugar", ""),
-                new Stop(242L, "INE Módulo 13 de Abril", 23.2329, -106.4062, "lugar", ""),
-                new Stop(243L, "INE Módulo Ejército Mexicano", 23.2329, -106.4062, "lugar", ""),
-                new Stop(244L, "INE Sanchez Celis", 23.2329, -106.4062, "lugar", ""),
-                new Stop(245L, "INE Módulo 250652 Plaza Acaya", 23.2329, -106.4062, "lugar", ""),
-                new Stop(246L, "01 Junta Distrital Ejecutiva (INE)", 23.2329, -106.4062, "lugar", ""),
-                new Stop(247L, "Comisión Federal de Electricidad Centro", 23.2329, -106.4062, "lugar", ""),
-                new Stop(248L, "CFE ZONA MAZATLAN DISTRIBUCIÓN", 23.2329, -106.4062, "lugar", ""),
-                new Stop(249L, "ALMACÉN CFE ZONA MAZATLÁN", 23.2329, -106.4062, "lugar", ""),
-                new Stop(250L, "CFE Subestación Del Mar", 23.2329, -106.4062, "lugar", ""),
-                new Stop(251L, "Cfe distribución San Ángel", 23.2329, -106.4062, "lugar", ""),
-                new Stop(252L, "Unidad Administrativa de Mazatlán", 23.2329, -106.4062, "lugar", ""),
-                new Stop(253L, "Unidad Administrativa del Gobierno del Estado de Sinaloa", 23.2329, -106.4062, "lugar", ""),
-                new Stop(254L, "Unidad de Servicios Estatales (Gran Plaza)", 23.2329, -106.4062, "lugar", ""),
-                new Stop(255L, "Unidad de Servicios Estatales Conchi", 23.2329, -106.4062, "lugar", ""),
-                new Stop(256L, "Gobierno Municipal De Mazatlán", 23.2329, -106.4062, "lugar", ""),
-                new Stop(257L, "DIF Mazatlan", 23.2329, -106.4062, "lugar", ""),
-                new Stop(258L, "Sistema Municipal para DIF Municipio de Mazatlán Playas", 23.2329, -106.4062, "lugar", ""),
-                new Stop(259L, "Sistema Dif Municipal Centro", 23.2329, -106.4062, "lugar", ""),
-                new Stop(260L, "Sistema Municipal Para El Dif Municipio de Mazatlán Constitución", 23.2329, -106.4062, "lugar", ""),
-                new Stop(261L, "Procuraduría De Protección De Niñas, Niños Y Adolescentes del sistema DIF municipal", 23.2329, -106.4062, "lugar", ""),
-                new Stop(262L, "Conalep Mazatlan 1", 23.2329, -106.4062, "escuela", ""),
-                new Stop(263L, "Parque Industrial Alfredo V. Bonfil", 23.2329, -106.4062, "parque", ""),
-                new Stop(265L, "ISSSTE Clínica Hospital, Mazatlán", 23.2329, -106.4062, "hospital", ""),
-                new Stop(266L, "ISSSTE Unidad de Medicina Familiar", 23.2329, -106.4062, "hospital", ""),
-                new Stop(267L, "IMSS Mazatlán (HGZMF 003)", 23.2329, -106.4062, "hospital", ""),
-                new Stop(269L, "Juarez Sunday market", 23.2329, -106.4062, "lugar", ""),
-                new Stop(270L, "Mercado Pino Suárez Mazatlán", 23.2329, -106.4062, "comercio", ""),
-                new Stop(273L, "Mi Bodega Aurrera Pradera Dorada", 23.2329, -106.4062, "comercio", ""),
-                new Stop(274L, "Ley Valle Dorado", 23.2329, -106.4062, "comercio", ""),
-                new Stop(275L, "Ley Mayoreo Mazabastos", 23.2329, -106.4062, "comercio", ""),
-                new Stop(276L, "Plaza Ley Mazatlán", 23.2329, -106.4062, "comercio", ""),
-                new Stop(277L, "Super Ley Express Munich", 23.2329, -106.4062, "comercio", ""),
-                new Stop(278L, "Casa Ley Paseo Bicentenario", 23.2329, -106.4062, "comercio", ""),
-                new Stop(279L, "RENACIMIENTO Colosio", 23.2329, -106.4062, "lugar", ""),
-                new Stop(280L, "Funeraria Renacimiento Centro", 23.2329, -106.4062, "lugar", ""),
-                new Stop(281L, "Renacimiento Afueras", 23.2329, -106.4062, "lugar", ""),
-                new Stop(282L, "Plaza De Toros", 23.2329, -106.4062, "lugar", ""),
+                new Stop(269L, "Mercado y Tianguis Benito Juárez", 23.229543, -106.405411, "mercado", "Calle Enrique Pérez Arce, Col. Benito Juárez"),
+                new Stop(276L, "Plaza El Mar (Ley)", 23.245480, -106.419544, "comercio", "Vía de Acceso Ley El Mar, López Mateos"),
                 new Stop(283L, "Pesca Azteca", 23.213062, -106.393438, "lugar", ""),
                 new Stop(284L, "Envases Universales", 23.226312, -106.382563, "industria", ""),
                 new Stop(285L, "Plazuela Urias", 23.221312, -106.378563, "lugar", ""),
@@ -359,15 +330,33 @@ public class DataInitializer implements CommandLineRunner {
                 new Stop(400L, "Hotel Sands Arenas Mazatlán", 23.224687, -106.425938, "hotel", ""),
                 new Stop(400L, "Alberca Olímpica Mazatlán", 23.229062, -106.423063, "entretenimiento", ""),
                 new Stop(400L, "IMSS Mazatlán (HGZMF 003)", 23.233437, -106.423812, "hospital", ""),
-                new Stop(400L, "Hospital Naval de Mazatlan", 23.234312, -106.424937, "hospital", "")
+                new Stop(400L, "Hospital Naval de Mazatlan", 23.234312, -106.424937, "hospital", ""),
+                new Stop(null, "Playa Brujas", 23.302280, -106.489240, "playa", "Playa Brujas, Cerritos, 82112 Mazatlán")
         );
                 List<Stop> existingStops = stopRepository.findAll();
         for (Stop s : verifiedStops) {
             boolean exists = existingStops.stream().anyMatch(ex -> ex.getName() != null && ex.getName().equals(s.getName()));
             if (!exists) {
+                s.setId(null);
                 stopRepository.save(s);
             }
         }
+
+        // Evitar duplicado de Centro de Convenciones (ya existe stop #95 "Mazatlán International Center (Centro de Convenciones)")
+        existingStops.stream()
+                .filter(ex -> "Centro de Convenciones Mazatlán (MIC)".equals(ex.getName()))
+                .forEach(stopRepository::delete);
+
+        // Corregir coordenadas de Playas de Mazatlán (Zona Dorada) si aún apunta al extremo norte de Cerritos
+        existingStops.stream()
+                .filter(ex -> "Playas de Mazatlán (Zona Dorada)".equals(ex.getName())
+                        && ex.getLatitude() != null && ex.getLatitude() > 23.28)
+                .forEach(ex -> {
+                    ex.setLatitude(23.244428);
+                    ex.setLongitude(-106.452477);
+                    ex.setAddress("Av. Camarón Sábalo, Zona Dorada, 82110 Mazatlán");
+                    stopRepository.save(ex);
+                });
         
         // Limpiar duplicados que se hayan creado por error de IDs
         existingStops = stopRepository.findAll();
@@ -380,8 +369,11 @@ public class DataInitializer implements CommandLineRunner {
             }
         }
         
-        // Eliminar explícitamente las paradas defectuosas
-        List<Long> faultyIds = Arrays.asList(11L, 35L, 175L, 193L, 209L, 211L, 213L, 223L, 224L, 226L, 229L, 178L, 215L, 264L, 174L, 212L, 210L, 233L, 228L, 236L, 177L, 214L, 234L, 225L, 184L, 220L, 268L, 185L, 186L, 221L, 271L, 272L, 217L, 65L, 130L);
+        // Eliminar explícitamente las paradas defectuosas y duplicadas en 23.2329, -106.4062
+        List<Long> faultyIds = Arrays.asList(
+                11L, 35L, 175L, 193L, 209L, 211L, 213L, 223L, 224L, 226L, 229L, 178L, 215L, 264L, 174L, 212L, 210L, 233L, 228L, 236L, 177L, 214L, 234L, 225L, 184L, 220L, 268L, 185L, 186L, 221L, 271L, 272L, 217L, 65L, 130L,
+                237L, 238L, 239L, 240L, 241L, 242L, 243L, 244L, 245L, 246L, 247L, 248L, 249L, 250L, 251L, 253L, 254L, 255L, 256L, 257L, 258L, 259L, 260L, 261L, 262L, 263L, 265L, 266L, 270L, 273L, 274L, 275L, 277L, 278L, 279L, 280L, 281L, 282L
+        );
         for (Long faultyId : faultyIds) {
             if (stopRepository.existsById(faultyId)) {
                 stopRepository.deleteById(faultyId);

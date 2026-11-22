@@ -59,11 +59,11 @@ const Api = {
         return await response.json();
     },
 
-    register: async (email, username, password) => {
+    register: async (email, username, password, verificationCode) => {
         const response = await fetch(`${API_BASE_URL}/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, username, password })
+            body: JSON.stringify({ email, username, password, verificationCode })
         });
         if (!response.ok) {
             const err = await response.json();
@@ -109,6 +109,19 @@ const Api = {
         return await response.json();
     },
 
+    changePassword: async (currentPassword, newPassword) => {
+        const response = await fetch(`${API_BASE_URL}/auth/change-password`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ currentPassword, newPassword })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'No se pudo cambiar la contraseña');
+        }
+        return data;
+    },
+
     // -----------------------------------------------------
     // CONSULTA DE RUTAS Y PARADAS (PÚBLICAS)
     // -----------------------------------------------------
@@ -145,6 +158,51 @@ const Api = {
     // -----------------------------------------------------
     // GESTIÓN DE ADMINISTRACIÓN (PROTEGIDAS)
     // -----------------------------------------------------
+    getAdminRoutes: async () => {
+        const response = await fetch(`${API_BASE_URL}/admin/routes`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al cargar rutas de administración');
+        return await response.json();
+    },
+
+    getAdminRouteStops: async (id) => {
+        const response = await fetch(`${API_BASE_URL}/admin/routes/${id}/stops`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al cargar paradas de la ruta');
+        return await response.json();
+    },
+
+    getAdminRouteCoordinates: async (id) => {
+        const response = await fetch(`${API_BASE_URL}/admin/routes/${id}/coordinates`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al cargar trazado de la ruta');
+        return await response.json();
+    },
+
+    getAdminStops: async () => {
+        const response = await fetch(`${API_BASE_URL}/admin/stops`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al cargar paradas de administración');
+        return await response.json();
+    },
+
+    exportAdminCatalog: async () => {
+        const response = await fetch(`${API_BASE_URL}/admin/export`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al exportar respaldo');
+        return await response.json();
+    },
+
     createRoute: async (routeData) => {
         const response = await fetch(`${API_BASE_URL}/admin/routes`, {
             method: 'POST',
@@ -162,6 +220,16 @@ const Api = {
             body: JSON.stringify(routeData)
         });
         await handleAdminError(response, 'Error al actualizar la ruta');
+        return await response.json();
+    },
+
+    toggleRouteActive: async (id, active) => {
+        const response = await fetch(`${API_BASE_URL}/admin/routes/${id}/active`, {
+            method: 'PATCH',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ active: Boolean(active) })
+        });
+        await handleAdminError(response, 'Error al cambiar visibilidad de la ruta');
         return await response.json();
     },
 

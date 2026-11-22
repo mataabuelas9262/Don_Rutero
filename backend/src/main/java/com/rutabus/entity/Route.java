@@ -23,7 +23,10 @@ public class Route {
     private Boolean active = true;
 
     @Column(nullable = true)
-    private Double price; // Tarifa en pesos MXN
+    private Double price; // Tarifa normal en pesos MXN
+
+    @Column(name = "student_price", nullable = true)
+    private Double studentPrice = 3.5; // Tarifa estudiantil en pesos MXN (TIIE / credencial)
 
     @Column(name = "frequency_minutes", nullable = true)
     private Integer frequencyMinutes; // Frecuencia en minutos
@@ -77,6 +80,14 @@ public class Route {
 
     public void setPrice(Double price) {
         this.price = price;
+    }
+
+    public Double getStudentPrice() {
+        return studentPrice != null ? studentPrice : 3.5;
+    }
+
+    public void setStudentPrice(Double studentPrice) {
+        this.studentPrice = studentPrice;
     }
 
     public Integer getFrequencyMinutes() {

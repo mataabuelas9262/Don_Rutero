@@ -2,9 +2,11 @@ package com.rutabus.config;
 
 import com.rutabus.security.JwtAuthenticationFilter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -14,12 +16,15 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
+import org.springframework.security.web.header.writers.StaticHeadersWriter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Configuration
 @EnableWebSecurity
@@ -27,6 +32,9 @@ public class SecurityConfig {
 
     @Autowired
     private JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @Value("${app.cors.allowed-origins:http://localhost:*,http://127.0.0.1:*}")
+    private String allowedOriginsRaw;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -44,9 +52,26 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .headers(headers -> {
+                headers.contentTypeOptions(Customizer.withDefaults());
+                headers.frameOptions(frame -> frame.deny());
+                headers.referrerPolicy(ref -> ref.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
+                headers.addHeaderWriter(new StaticHeadersWriter("Permissions-Policy", "geolocation=(self), camera=(), microphone=()"));
+                headers.contentSecurityPolicy(csp -> csp.policyDirectives(
+                    "default-src 'self'; " +
+                    "script-src 'self' 'unsafe-inline' https://unpkg.com; " +
+                    "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; " +
+                    "font-src 'self' https://fonts.gstatic.com data:; " +
+                    "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://unpkg.com; " +
+                    "connect-src 'self' https://nominatim.openstreetmap.org https://unpkg.com; " +
+                    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+                ));
+            })
             .authorizeHttpRequests(auth -> auth
                 // Recursos estáticos del Frontend
                 .requestMatchers("/", "/index.html", "/admin.html", "/css/**", "/js/**", "/assets/**", "/favicon.ico").permitAll()
+                // Cambio de contraseña requiere usuario autenticado
+                .requestMatchers("/api/auth/change-password").authenticated()
                 // Rutas públicas de autenticación y consulta
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/routes/**").permitAll()
@@ -65,8 +90,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        // Permitir todos los orígenes para desarrollo (incluido file:// para abrir index.html directamente)
-        configuration.setAllowedOriginPatterns(Collections.singletonList("*"));
+        List<String> origins = Arrays.stream(allowedOriginsRaw.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
+        configuration.setAllowedOriginPatterns(origins);
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "Cache-Control", "Accept", "X-Requested-With"));
         configuration.setAllowCredentials(true);

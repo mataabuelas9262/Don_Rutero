@@ -38,9 +38,9 @@ const Auth = {
         }
     },
 
-    register: async (email, username, password) => {
+    register: async (email, username, password, verificationCode) => {
         try {
-            await Api.register(email, username, password);
+            await Api.register(email, username, password, verificationCode);
             showToast('¡Cuenta creada y verificada con éxito! Ya puedes iniciar sesión.');
             return true;
         } catch (err) {
@@ -73,7 +73,15 @@ const Auth = {
         if (Auth.user) {
             // Usuario Autenticado
             if (userBadge) {
-                userBadge.innerHTML = `<img src="assets/icons/ui_usuario.svg" style="width:14px; height:14px; vertical-align:-2px;"> <span>${Auth.user.username}</span>`;
+                userBadge.innerHTML = '';
+                const avatar = document.createElement('img');
+                avatar.src = 'assets/icons/ui_usuario.svg';
+                avatar.style.cssText = 'width:14px; height:14px; vertical-align:-2px;';
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = Auth.user.username;
+                userBadge.appendChild(avatar);
+                userBadge.appendChild(document.createTextNode(' '));
+                userBadge.appendChild(nameSpan);
                 userBadge.style.display = 'flex';
                 userBadge.title = 'Ver mi perfil';
             }

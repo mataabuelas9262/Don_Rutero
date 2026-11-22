@@ -36,24 +36,31 @@ public class RouteController {
         return routeRepository.findByActiveTrue();
     }
 
-    // Obtener detalles de una ruta específica
+    // Obtener detalles de una ruta activa específica
     @GetMapping("/{id}")
     public ResponseEntity<Route> getRouteById(@PathVariable Long id) {
         return routeRepository.findById(id)
+                .filter(r -> Boolean.TRUE.equals(r.getActive()))
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    // Obtener las paradas asociadas a una ruta específica, en orden
+    // Obtener las paradas asociadas a una ruta activa, en orden
     @GetMapping("/{id}/stops")
-    public List<RouteStop> getRouteStops(@PathVariable Long id) {
-        return routeStopRepository.findByRouteIdOrderByStopOrderAsc(id);
+    public ResponseEntity<List<RouteStop>> getRouteStops(@PathVariable Long id) {
+        return routeRepository.findById(id)
+                .filter(r -> Boolean.TRUE.equals(r.getActive()))
+                .map(r -> ResponseEntity.ok(routeStopRepository.findByRouteIdOrderByStopOrderAsc(id)))
+                .orElse(ResponseEntity.notFound().build());
     }
 
-    // Obtener el trazado de coordenadas de una ruta específica, en orden
+    // Obtener el trazado de coordenadas de una ruta activa, en orden
     @GetMapping("/{id}/coordinates")
-    public List<RouteCoordinate> getRouteCoordinates(@PathVariable Long id) {
-        return routeCoordinateRepository.findByRouteIdOrderBySequenceOrderAsc(id);
+    public ResponseEntity<List<RouteCoordinate>> getRouteCoordinates(@PathVariable Long id) {
+        return routeRepository.findById(id)
+                .filter(r -> Boolean.TRUE.equals(r.getActive()))
+                .map(r -> ResponseEntity.ok(routeCoordinateRepository.findByRouteIdOrderBySequenceOrderAsc(id)))
+                .orElse(ResponseEntity.notFound().build());
     }
 
     // Obtener todas las paradas físicas registradas (útil para mostrarlas en el mapa o buscador)

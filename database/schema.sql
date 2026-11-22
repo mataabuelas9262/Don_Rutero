@@ -56,13 +56,7 @@ CREATE TABLE IF NOT EXISTS route_coordinates (
 -- DATOS DE PRUEBA (Mazatlán, Sinaloa)
 -- -----------------------------------------------------
 
--- Usuarios por defecto
--- Contraseña admin: "admin123" encriptada con BCrypt
--- Contraseña usuario: "user123" encriptada con BCrypt
-INSERT INTO users (username, password, role) VALUES 
-('admin', '$2b$10$nTrlOl75bUHdXJbRSkGDauaBKTCQIfGBUhJOgP0exeHwCemzniDxC', 'ROLE_ADMIN'),
-('usuario', '$2b$10$Ts26Pevyt3QYndZTtMifQ.KvVFeB/S0KuNpY05mkBWMA5BtHDJwc2', 'ROLE_USER')
-ON DUPLICATE KEY UPDATE username=username;
+-- La cuenta administradora inicial se crea desde DataInitializer usando ADMIN_DEFAULT_PASSWORD (sin claves fijas en SQL)
 
 -- Rutas
 INSERT INTO routes (id, name, description, color, active, price, frequency_minutes) VALUES

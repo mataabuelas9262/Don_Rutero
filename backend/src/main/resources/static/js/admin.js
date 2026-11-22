@@ -5,12 +5,131 @@
 let adminRoutes = [];
 let selectedRouteId = null;
 
+// Filtros y pestaña activa del panel admin
+let activeAdminTab = 'routes'; // 'routes' | 'stops'
+let routeStatusFilter = 'all'; // 'all' | 'active' | 'inactive'
+let routeSearchText = '';
+let stopStatusFilter = 'all';  // 'all' | 'orphan'
+let stopSearchText = '';
+
 // Estados del mapa en edición
 let drawingMode = false;       // Trazar línea de calles
-let stopCreationMode = false;  // Colocar una nueva parada
+let stopCreationMode = false;  // Colocar o reubicar una parada
+let relocateStopId = null;     // ID si se está reubicando una parada existente
 let drawnCoordinates = [];
 
 let historyStack = [];
+let initialStudioCoordsSnapshot = '[]';
+let initialStudioStopsSnapshot = '[]';
+
+// Referencias a marcadores físicos por stop.id para sincronizar estado visual con MarkerCluster
+const physicalStopMarkersMap = new Map();
+let importedRouteDraftMeta = null; // { name, color } sugeridos al importar KML
+let detectedKmlTracks = [];
+
+function serializeStudioCoords(coords) {
+    if (!Array.isArray(coords)) return '[]';
+    return JSON.stringify(coords.map(c => [
+        Number(c.latitude).toFixed(6),
+        Number(c.longitude).toFixed(6)
+    ]));
+}
+
+function serializeStudioStops(stopIds) {
+    if (!Array.isArray(stopIds)) return '[]';
+    return JSON.stringify(stopIds.map(id => Number(id)));
+}
+
+function captureStudioBaseline() {
+    initialStudioCoordsSnapshot = serializeStudioCoords(drawnCoordinates);
+    initialStudioStopsSnapshot = serializeStudioStops(selectedStopIds);
+}
+
+function hasUnsavedStudioChanges() {
+    if (!drawingMode) return false;
+    return serializeStudioCoords(drawnCoordinates) !== initialStudioCoordsSnapshot
+        || serializeStudioStops(selectedStopIds) !== initialStudioStopsSnapshot;
+}
+
+function showAdminConfirm({
+    title = 'Confirmar acción',
+    message = '',
+    confirmText = 'Confirmar',
+    cancelText = 'Cancelar',
+    danger = true
+} = {}) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('confirm-modal');
+        const titleEl = document.getElementById('confirm-modal-title');
+        const msgEl = document.getElementById('confirm-modal-message');
+        const okBtn = document.getElementById('confirm-modal-ok');
+        const cancelBtn = document.getElementById('confirm-modal-cancel');
+        const closeBtn = document.getElementById('confirm-modal-close');
+        const badgeEl = document.getElementById('confirm-modal-badge');
+
+        if (!modal || !okBtn || !cancelBtn) {
+            resolve(false);
+            return;
+        }
+
+        titleEl.textContent = title;
+        msgEl.textContent = message;
+        okBtn.textContent = confirmText;
+        cancelBtn.textContent = cancelText;
+        okBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
+
+        if (badgeEl) {
+            badgeEl.style.background = danger ? '#fee2e2' : '#eef2ff';
+            badgeEl.style.color = danger ? '#dc2626' : 'var(--primary)';
+            badgeEl.textContent = danger ? '!' : '?';
+        }
+
+        modal.style.display = 'flex';
+
+        const cleanup = (result) => {
+            modal.style.display = 'none';
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            if (closeBtn) closeBtn.removeEventListener('click', onCancel);
+            modal.removeEventListener('click', onOverlayClick);
+            document.removeEventListener('keydown', onKeyDown);
+            resolve(result);
+        };
+
+        const onOk = () => cleanup(true);
+        const onCancel = () => cleanup(false);
+        const onOverlayClick = (e) => {
+            if (e.target === modal) cleanup(false);
+        };
+        const onKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                cleanup(false);
+            }
+        };
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        if (closeBtn) closeBtn.addEventListener('click', onCancel);
+        modal.addEventListener('click', onOverlayClick);
+        document.addEventListener('keydown', onKeyDown);
+    });
+}
+
+async function confirmDiscardStudioChanges(actionText) {
+    if (!hasUnsavedStudioChanges()) return true;
+    const count = drawnCoordinates.length;
+    const message = count > 0
+        ? `Realizaste cambios sin guardar en el trazado (${count} puntos en el mapa). Si continúas para ${actionText}, se descartarán tus modificaciones.`
+        : 'Realizaste cambios sin guardar en el trazado. Si continúas, se descartarán tus modificaciones.';
+    return await showAdminConfirm({
+        title: 'Cambios sin guardar',
+        message,
+        confirmText: 'Descartar cambios',
+        cancelText: 'Seguir editando',
+        danger: true
+    });
+}
 
 function saveToHistory() {
     historyStack.push(JSON.parse(JSON.stringify(drawnCoordinates)));
@@ -25,6 +144,9 @@ let studioBaseColor = '#ff4b2b'; // Color principal activo para el Studio
 let tempMarkers = [];          // Marcadores temporales de trazado
 let tempArrows = [];           // Flechas de dirección temporales en el Studio
 let physicalStopsData = [];    // Lista de paradas físicas cargadas de la DB
+let adminOsmSearchTimer = null;
+let adminOsmSearchResults = [];
+let adminOsmSearchMarker = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     // 1. Inicializar sesión. Si no es admin, fuera
@@ -37,66 +159,214 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2. Inicializar el mapa de Leaflet
     const map = initLeafletMap('map');
 
-    // 3. Cargar rutas y paradas físicas
-    await refreshAdminRoutes();
-    await refreshPhysicalStops();
+    // 3. Cargar rutas y paradas físicas (en paralelo)
+    await Promise.all([refreshAdminRoutes(), refreshPhysicalStops()]);
 
     // 4. Configurar eventos del panel
     setupAdminEventListeners(map);
 });
 
-// Obtiene y recarga la lista de rutas en el panel lateral del admin
-async function refreshAdminRoutes() {
-    try {
-        adminRoutes = await Api.getRoutes();
-        renderAdminRoutes(adminRoutes);
-    } catch (err) {
-        showToast('Error al cargar rutas administrativas', 'error');
+function updateAdminStats() {
+    const routesEl = document.getElementById('stat-routes-count');
+    const routesSubEl = document.getElementById('stat-routes-sub');
+    const stopsEl = document.getElementById('stat-stops-count');
+    const orphansEl = document.getElementById('stat-orphans-count');
+    const orphansBtn = document.getElementById('stat-orphans-btn');
+
+    const totalRoutes = adminRoutes.length;
+    const activeRoutes = adminRoutes.filter(r => r.active !== false).length;
+    const totalStops = physicalStopsData.length;
+    const orphanStops = physicalStopsData.filter(s => Number(s.routeCount || 0) === 0).length;
+
+    if (routesEl) routesEl.textContent = String(totalRoutes);
+    if (routesSubEl) routesSubEl.textContent = `${activeRoutes} activas`;
+    if (stopsEl) stopsEl.textContent = String(totalStops);
+    if (orphansEl) orphansEl.textContent = String(orphanStops);
+    if (orphansBtn) orphansBtn.classList.toggle('has-warning', orphanStops > 0);
+}
+
+function switchAdminTab(tab) {
+    activeAdminTab = tab === 'stops' ? 'stops' : 'routes';
+    const routesTab = document.getElementById('admin-tab-routes');
+    const stopsTab = document.getElementById('admin-tab-stops');
+    const routesPanel = document.getElementById('admin-routes-panel');
+    const stopsPanel = document.getElementById('admin-stops-panel');
+
+    if (routesTab) routesTab.classList.toggle('active', activeAdminTab === 'routes');
+    if (stopsTab) stopsTab.classList.toggle('active', activeAdminTab === 'stops');
+    if (routesPanel) routesPanel.style.display = activeAdminTab === 'routes' ? 'flex' : 'none';
+    if (stopsPanel) stopsPanel.style.display = activeAdminTab === 'stops' ? 'flex' : 'none';
+}
+
+function setAdminPanelCollapsed(collapsed) {
+    const sidebar = document.getElementById('admin-sidebar') || document.querySelector('.admin-body .sidebar');
+    const toggleBtn = document.getElementById('admin-panel-toggle');
+    if (!sidebar) return;
+    sidebar.classList.toggle('admin-collapsed', Boolean(collapsed));
+    if (toggleBtn) {
+        const isCollapsed = sidebar.classList.contains('admin-collapsed');
+        toggleBtn.textContent = isCollapsed ? 'Ver panel' : 'Ocultar';
+        toggleBtn.setAttribute('aria-expanded', String(!isCollapsed));
     }
 }
 
-// Renderiza las rutas con botones de acción (Editar, Borrar, Trazar)
-function renderAdminRoutes(routes) {
+function minimizeStudioHudOnCompactScreen() {
+    if (window.innerWidth > 1024) return;
+    const studioHud = document.getElementById('studio-controls-hud');
+    const studioHudToggle = document.getElementById('studio-hud-toggle');
+    if (studioHud) studioHud.classList.add('minimized');
+    if (studioHudToggle) studioHudToggle.textContent = 'Ver controles';
+}
+
+function setStopPlacementMode({ active, targetStopId = null, message = '' } = {}) {
+    stopCreationMode = Boolean(active);
+    relocateStopId = stopCreationMode ? (targetStopId ? Number(targetStopId) : null) : null;
+
+    const banner = document.getElementById('stop-mode-banner');
+    const bannerText = document.getElementById('stop-mode-banner-text');
+    const mapEl = document.getElementById('map');
+
+    if (banner) banner.style.display = stopCreationMode ? 'flex' : 'none';
+    if (bannerText && message) bannerText.textContent = message;
+    if (mapEl) mapEl.classList.toggle('stop-placement-cursor', stopCreationMode);
+    if (stopCreationMode && window.innerWidth <= 1024) {
+        setAdminPanelCollapsed(true);
+    }
+}
+
+// Obtiene y recarga la lista completa de rutas (activas y ocultas) en el panel lateral del admin
+async function refreshAdminRoutes() {
+    try {
+        adminRoutes = await Api.getAdminRoutes();
+        renderAdminRoutes();
+        updateAdminStats();
+    } catch (err) {
+        showToast(err.message || 'Error al cargar rutas administrativas', 'error');
+    }
+}
+
+function getFilteredAdminRoutes() {
+    const query = routeSearchText.trim().toLowerCase();
+    return adminRoutes.filter(route => {
+        const isActive = route.active !== false;
+        if (routeStatusFilter === 'active' && !isActive) return false;
+        if (routeStatusFilter === 'inactive' && isActive) return false;
+        if (query) {
+            const hay = `${route.name || ''} ${route.description || ''}`.toLowerCase();
+            if (!hay.includes(query)) return false;
+        }
+        return true;
+    });
+}
+
+// Renderiza las rutas con badges de estado y acciones sin handlers inline
+function renderAdminRoutes() {
     const listContainer = document.getElementById('route-list');
+    if (!listContainer) return;
     listContainer.innerHTML = '';
 
+    const routes = getFilteredAdminRoutes();
     if (routes.length === 0) {
-        listContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); font-size:0.9rem; padding: 20px;">No hay rutas. Crea una para empezar.</div>`;
+        const emptyMsg = adminRoutes.length === 0
+            ? 'No hay rutas. Crea una para empezar.'
+            : 'Ninguna ruta coincide con el filtro actual.';
+        listContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); font-size:0.88rem; padding: 20px;">${escapeAdminHtml(emptyMsg)}</div>`;
         return;
     }
 
     routes.forEach(route => {
         const card = document.createElement('div');
-        card.className = 'route-card';
-        card.dataset.id = route.id;
-        
+        const safeColor = /^#[0-9a-fA-F]{3,8}$/.test(String(route.color || '').trim()) ? route.color.trim() : '#E63E21';
+        const routeIdNum = Number(route.id);
+        const isActive = route.active !== false;
+        const coordCount = Number(route.coordCount ?? 0);
+        const stopCount = Number(route.stopCount ?? 0);
+
+        card.className = 'route-card' + (isActive ? '' : ' is-inactive') + (selectedRouteId === routeIdNum ? ' active' : '');
+        card.style.setProperty('--card-accent', safeColor);
+        card.dataset.id = String(routeIdNum);
+
+        const warnNoTrace = coordCount < 2 ? '<span class="admin-meta-warn">Sin trazado</span>' : '';
+        const warnNoStops = stopCount === 0 ? '<span class="admin-meta-warn">Sin paradas</span>' : '';
+
         card.innerHTML = `
-            <div class="route-indicator" style="background-color: ${route.color}; color: ${route.color};"></div>
+            <div class="route-indicator" style="background-color: ${safeColor}; color: ${safeColor};"></div>
             <div class="route-info">
-                <div class="route-name">${route.name}</div>
-                <div class="route-desc">${route.description || 'Sin descripción.'}</div>
-                <div class="admin-header-actions" style="margin-top: 10px;">
-                    <button class="btn btn-secondary" onclick="event.stopPropagation(); startTrazadoMode(${route.id}, '${route.color}')" style="padding: 6px 12px; font-size: 0.8rem; width: auto;">
-                        🗺️ Trazar
-                    </button>
-                    <button class="route-actions-btn" onclick="event.stopPropagation(); openEditRouteModal(${route.id})" title="Editar Info">✏️</button>
-                    <button class="route-actions-btn" onclick="event.stopPropagation(); confirmDeleteRoute(${route.id})" title="Eliminar Ruta" style="color:var(--danger)">🗑️</button>
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
+                    <div class="route-name" style="margin: 0;">${escapeAdminHtml(route.name)}</div>
+                    <span class="admin-status-badge ${isActive ? 'active' : 'inactive'}">${isActive ? 'Activa' : 'Oculta'}</span>
+                </div>
+                <div class="route-desc">${escapeAdminHtml(route.description || 'Sin descripción.')}</div>
+                <div class="admin-meta-line">
+                    <span>${coordCount} pts · ${stopCount} paradas</span>
+                    ${warnNoTrace}
+                    ${warnNoStops}
+                </div>
+                <div class="admin-header-actions" style="margin-top: 8px; flex-wrap: wrap; gap: 5px;">
+                    <button type="button" class="btn btn-secondary" data-action="trace" style="padding: 4px 10px; font-size: 0.75rem;">Trazar</button>
+                    <button type="button" class="route-actions-btn" data-action="toggle-active" style="font-size: 0.75rem;" title="${isActive ? 'Ocultar al público' : 'Publicar al público'}">${isActive ? 'Ocultar' : 'Activar'}</button>
+                    <button type="button" class="route-actions-btn" data-action="edit" style="font-size: 0.75rem;" title="Editar información">Editar</button>
+                    <button type="button" class="route-actions-btn" data-action="delete" title="Eliminar ruta" style="font-size: 0.75rem; color: var(--danger);">Eliminar</button>
                 </div>
             </div>
         `;
 
-        card.addEventListener('click', () => selectRouteAdmin(route.id, card));
+        card.querySelector('[data-action="trace"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            startTrazadoMode(routeIdNum, safeColor);
+        });
+        card.querySelector('[data-action="toggle-active"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleRouteActiveAdmin(route);
+        });
+        card.querySelector('[data-action="edit"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openEditRouteModal(routeIdNum);
+        });
+        card.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            confirmDeleteRoute(routeIdNum);
+        });
+
+        card.addEventListener('click', () => selectRouteAdmin(routeIdNum, card));
         listContainer.appendChild(card);
     });
 }
 
-// Selecciona una ruta y muestra su trazado actual
+async function toggleRouteActiveAdmin(route) {
+    const nextState = !(route.active !== false);
+    try {
+        await Api.toggleRouteActive(route.id, nextState);
+        showToast(nextState ? `Ruta "${route.name}" activada para el público.` : `Ruta "${route.name}" ocultada del mapa público.`);
+        await refreshAdminRoutes();
+    } catch (err) {
+        showToast(err.message || 'No se pudo cambiar el estado de la ruta', 'error');
+    }
+}
+
+async function downloadAdminBackupJson() {
+    try {
+        const data = await Api.exportAdminCatalog();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const dateTag = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `don-rutero-respaldo-${dateTag}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast(`Respaldo descargado (${data.routeCount} rutas, ${data.stopCount} paradas).`);
+    } catch (err) {
+        showToast(err.message || 'No se pudo generar el respaldo JSON', 'error');
+    }
+}
+
+// Selecciona una ruta y muestra su trazado actual (funciona también en rutas ocultas vía /api/admin/routes/{id}/...)
 async function selectRouteAdmin(routeId, cardElement) {
     if (drawingMode) {
-        const msg = drawnCoordinates.length > 0 
-            ? `⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Estás seguro de que deseas salir del modo trazado y descartar tus cambios para ver otra ruta?`
-            : 'Estás en modo de trazado. ¿Deseas salir sin guardar los cambios?';
-        if (!confirm(msg)) {
+        if (!(await confirmDiscardStudioChanges('ver otra ruta'))) {
             return;
         }
         exitDrawingMode();
@@ -111,66 +381,250 @@ async function selectRouteAdmin(routeId, cardElement) {
         clearMapDrawings();
 
         const route = adminRoutes.find(r => r.id === routeId);
-        
-        // Cargar trazado
-        const coords = await Api.getRouteCoordinates(routeId);
-        drawRouteLine(coords, route.color);
+        const color = route ? route.color : '#E63E21';
 
-        // Cargar paradas
-        const stops = await Api.getRouteStops(routeId);
-        drawRouteStops(stops, route.color);
-
+        const [coords, stops] = await Promise.all([
+            Api.getAdminRouteCoordinates(routeId),
+            Api.getAdminRouteStops(routeId)
+        ]);
+        drawRouteLine(coords, color);
+        drawRouteStops(stops, color);
     } catch (err) {
         showToast('Error al visualizar ruta seleccionada', 'error');
     }
 }
 
-// Obtiene todas las paradas de la base de datos y las dibuja interactivamente en el mapa
+function getFilteredAdminStops() {
+    const query = stopSearchText.trim().toLowerCase();
+    return physicalStopsData.filter(stop => {
+        if (stopStatusFilter === 'orphan' && Number(stop.routeCount || 0) > 0) return false;
+        if (query) {
+            const hay = `${stop.name || ''} ${stop.address || ''} ${stop.type || ''}`.toLowerCase();
+            if (!hay.includes(query)) return false;
+        }
+        return true;
+    });
+}
+
+function renderAdminStops() {
+    const listContainer = document.getElementById('admin-stop-list');
+    if (!listContainer) return;
+    listContainer.innerHTML = '';
+
+    const stops = getFilteredAdminStops();
+    if (stops.length === 0) {
+        const emptyMsg = physicalStopsData.length === 0
+            ? 'No hay paradas registradas.'
+            : 'Ninguna parada coincide con el filtro actual.';
+        listContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); font-size:0.88rem; padding: 20px;">${escapeAdminHtml(emptyMsg)}</div>`;
+        return;
+    }
+
+    stops.forEach(stop => {
+        const config = (typeof getStopIconConfig === 'function')
+            ? getStopIconConfig(stop.name, stop.type)
+            : { bgColor: '#475569', category: 'Parada' };
+        const routeCount = Number(stop.routeCount || 0);
+        const card = document.createElement('div');
+        card.className = 'admin-stop-card';
+
+        card.innerHTML = `
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                <div style="min-width: 0;">
+                    <div style="font-weight: 700; font-size: 0.86rem; color: var(--text-primary);">${escapeAdminHtml(stop.name)}</div>
+                    <div style="font-size: 0.74rem; color: var(--text-secondary); margin-top: 2px;">${escapeAdminHtml(stop.address || 'Mazatlán, Sinaloa')}</div>
+                </div>
+                <span class="admin-status-badge ${routeCount > 0 ? 'active' : 'inactive'}" style="${routeCount === 0 ? 'background: #fef3c7; color: #b45309;' : ''}">
+                    ${routeCount > 0 ? `${routeCount} ruta${routeCount > 1 ? 's' : ''}` : 'Sin ruta'}
+                </span>
+            </div>
+            <div style="margin-top: 5px; display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: var(--text-muted);">
+                <span style="padding: 1px 6px; border-radius: 4px; background: ${config.bgColor}18; color: ${config.bgColor}; font-weight: 700;">${escapeAdminHtml(config.category || stop.type || 'Parada')}</span>
+                <span>${Number(stop.latitude).toFixed(5)}, ${Number(stop.longitude).toFixed(5)}</span>
+            </div>
+            <div class="admin-stop-card-actions">
+                <button type="button" class="route-actions-btn" data-action="locate" style="font-size: 0.74rem; padding: 4px 8px;">Ver en mapa</button>
+                <button type="button" class="route-actions-btn" data-action="edit" style="font-size: 0.74rem; padding: 4px 8px;">Editar</button>
+                <button type="button" class="route-actions-btn" data-action="delete" style="font-size: 0.74rem; padding: 4px 8px; color: var(--danger);">Eliminar</button>
+            </div>
+        `;
+
+        const focusStop = () => focusPhysicalStopOnMap(stop.id);
+        card.addEventListener('click', focusStop);
+        card.querySelector('[data-action="locate"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            focusStop();
+        });
+        card.querySelector('[data-action="edit"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openEditStopModal(stop.id);
+        });
+        card.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            confirmDeleteStop(stop.id);
+        });
+
+        listContainer.appendChild(card);
+    });
+}
+
+let activeAdminStopPopup = null;
+
+function openAdminStopPopup(marker, stop) {
+    if (!mapInstance || !stop) return;
+    const latlng = marker ? marker.getLatLng() : L.latLng(stop.latitude, stop.longitude);
+    // Usar L.popup independiente evita que bindPopup registre doble toggle al volver a hacer clic
+    if (activeAdminStopPopup) {
+        mapInstance.closePopup(activeAdminStopPopup);
+    }
+    activeAdminStopPopup = L.popup({ offset: [0, -8] })
+        .setLatLng(latlng)
+        .setContent(buildAdminStopPopup(stop))
+        .openOn(mapInstance);
+}
+
+function focusPhysicalStopOnMap(stopId) {
+    const stop = physicalStopsData.find(s => s.id === Number(stopId));
+    if (!stop || !mapInstance) return;
+    const marker = physicalStopMarkersMap.get(Number(stopId));
+
+    const openTarget = () => {
+        if (marker && typeof allStopsClusterGroup !== 'undefined' && allStopsClusterGroup && typeof allStopsClusterGroup.zoomToShowLayer === 'function') {
+            allStopsClusterGroup.zoomToShowLayer(marker, () => openAdminStopPopup(marker, stop));
+        } else {
+            openAdminStopPopup(marker, stop);
+        }
+    };
+
+    const targetLatLng = L.latLng(stop.latitude, stop.longitude);
+    const targetZoom = Math.max(mapInstance.getZoom(), 16);
+    const needsMove = mapInstance.getZoom() < 16 || !mapInstance.getBounds().pad(-0.15).contains(targetLatLng);
+
+    if (needsMove) {
+        mapInstance.once('moveend', openTarget);
+        mapInstance.setView(targetLatLng, targetZoom, { animate: true });
+    } else {
+        openTarget();
+    }
+}
+
+function setPhysicalStopMarkerState(stopId, isSelected) {
+    const markerEl = document.getElementById(`physical-stop-${stopId}`);
+    if (!markerEl) return;
+    if (isSelected) {
+        markerEl.style.backgroundColor = '#10b981';
+        markerEl.style.borderColor = '#ecfdf5';
+        markerEl.style.transform = 'scale(1.28)';
+    } else {
+        const stop = physicalStopsData.find(s => s.id === Number(stopId));
+        const config = (typeof getStopIconConfig === 'function' && stop)
+            ? getStopIconConfig(stop.name, stop.type)
+            : { bgColor: '#475569' };
+        markerEl.style.backgroundColor = config.bgColor;
+        markerEl.style.borderColor = 'white';
+        markerEl.style.transform = 'scale(1)';
+    }
+}
+
+function syncStudioSelectedStopVisuals() {
+    if (!drawingMode) return;
+    physicalStopsData.forEach(s => {
+        setPhysicalStopMarkerState(s.id, selectedStopIds.includes(s.id));
+    });
+}
+
+function buildAdminStopPopup(stop) {
+    const config = (typeof getStopIconConfig === 'function')
+        ? getStopIconConfig(stop.name, stop.type)
+        : { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Punto de Interés' };
+    const routeCount = Number(stop.routeCount || 0);
+    const routesInfo = routeCount > 0 && Array.isArray(stop.routeNames)
+        ? `En ${routeCount} ruta${routeCount > 1 ? 's' : ''}: ${stop.routeNames.slice(0, 3).join(', ')}${stop.routeNames.length > 3 ? '...' : ''}`
+        : 'Sin rutas vinculadas';
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = "font-family: 'Inter', sans-serif; min-width: 195px;";
+    wrap.innerHTML = `
+        <span style="font-size: 0.68rem; background: ${config.bgColor}15; color: ${config.bgColor}; padding: 2px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase; display: inline-block; margin-bottom: 4px;">${escapeAdminHtml(config.category || 'Punto de Interés')}</span>
+        <h4 style="margin:0 0 4px 0; color:#1f2937; font-size: 0.9rem;">${escapeAdminHtml(stop.name)}</h4>
+        <p style="margin: 0 0 4px 0; color: #475569; font-size: 0.78rem;">${escapeAdminHtml(stop.address || 'Mazatlán, Sinaloa')}</p>
+        <p style="margin: 0 0 8px 0; color: ${routeCount === 0 ? '#b45309' : '#0f766e'}; font-size: 0.72rem; font-weight: 600;">${escapeAdminHtml(routesInfo)}</p>
+        <div style="display: flex; gap: 6px;">
+            <button type="button" class="btn btn-secondary" data-stop-action="edit" style="flex: 1; padding: 5px 8px; font-size: 0.75rem;">Editar</button>
+            <button type="button" class="btn btn-danger" data-stop-action="delete" style="flex: 1; padding: 5px 8px; font-size: 0.75rem;">Eliminar</button>
+        </div>
+    `;
+    wrap.querySelector('[data-stop-action="edit"]').addEventListener('click', () => {
+        mapInstance.closePopup();
+        openEditStopModal(stop.id);
+    });
+    wrap.querySelector('[data-stop-action="delete"]').addEventListener('click', () => {
+        confirmDeleteStop(stop.id);
+    });
+    return wrap;
+}
+
+// Obtiene todas las paradas con su conteo de rutas desde admin API y las dibuja en el mapa (con clustering)
 async function refreshPhysicalStops() {
     try {
-        physicalStopsData = await Api.getAllStops();
-        
-        // Limpiar marcadores físicos previos
-        allStopsMarkers.forEach(m => mapInstance.removeLayer(m));
-        allStopsMarkers = [];
+        physicalStopsData = await Api.getAdminStops();
+        physicalStopMarkersMap.clear();
+
+        const targetLayer = (typeof getOrResetPhysicalStopsLayer === 'function')
+            ? getOrResetPhysicalStopsLayer()
+            : mapInstance;
+        if (!targetLayer) {
+            renderAdminStops();
+            updateAdminStats();
+            return;
+        }
+
+        const markersToAdd = [];
 
         physicalStopsData.forEach(stop => {
-            const config = (typeof getStopIconConfig === 'function') ? getStopIconConfig(stop.name, stop.type) : { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569' };
+            const config = (typeof getStopIconConfig === 'function')
+                ? getStopIconConfig(stop.name, stop.type)
+                : { iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569' };
             const stopIcon = L.divIcon({
                 className: 'physical-stop-marker-admin',
-                html: `<div style="background-color: ${config.bgColor}; border: 2px solid white; width: 22px; height: 22px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; cursor: pointer;" id="physical-stop-${stop.id}">
+                html: `<div style="background-color: ${config.bgColor}; border: 2px solid white; width: 22px; height: 22px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center; cursor: pointer;" id="physical-stop-${Number(stop.id)}">
                          <img src="${config.iconUrl}" alt="" style="width: 12px; height: 12px; filter: brightness(0) invert(1); pointer-events: none;">
                        </div>`,
                 iconSize: [22, 22],
                 iconAnchor: [11, 11]
             });
 
-            // Marcador físico en el mapa
-            const marker = L.marker([stop.latitude, stop.longitude], { icon: stopIcon })
-                .addTo(mapInstance);
+            const marker = L.marker([stop.latitude, stop.longitude], { icon: stopIcon });
 
-            // Al hacer clic en un marcador de parada física en modo de trazado, se asocia a la ruta
             marker.on('click', (e) => {
                 L.DomEvent.stopPropagation(e);
                 if (drawingMode) {
                     addStopToRouteDrawing(stop);
+                } else if (stopCreationMode) {
+                    handleMapClickForStop(e.latlng);
                 } else {
-                    // Mostrar popup con opción de eliminar parada física
-                    marker.bindPopup(`
-                        <div style="font-family: 'Inter', sans-serif; min-width: 170px;">
-                            <span style="font-size: 0.7rem; background: ${config.bgColor}15; color: ${config.bgColor}; padding: 2px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase; display: inline-block; margin-bottom: 4px;">${config.category || 'Punto de Interés'}</span>
-                            <h4 style="margin:0 0 4px 0; color:#1f2937; font-size: 0.9rem;">${stop.name}</h4>
-                            <p style="margin: 0 0 6px 0; color: #475569; font-size: 0.78rem;">📍 ${stop.address || 'Mazatlán, Sinaloa'}</p>
-                            <button class="btn btn-danger" onclick="confirmDeleteStop(${stop.id})" style="padding: 4px 8px; font-size:0.75rem; width:100%; border-radius:4px;">
-                                Eliminar Parada Física
-                            </button>
-                        </div>
-                    `).openPopup();
+                    openAdminStopPopup(marker, stop);
                 }
             });
 
+            physicalStopMarkersMap.set(Number(stop.id), marker);
             allStopsMarkers.push(marker);
+            markersToAdd.push(marker);
         });
+
+        if (typeof allStopsClusterGroup !== 'undefined' && allStopsClusterGroup && targetLayer === allStopsClusterGroup) {
+            allStopsClusterGroup.addLayers(markersToAdd);
+            if (!allStopsClusterGroup._studioSyncBound) {
+                allStopsClusterGroup._studioSyncBound = true;
+                allStopsClusterGroup.on('animationend spiderfied', syncStudioSelectedStopVisuals);
+            }
+        } else {
+            markersToAdd.forEach(m => m.addTo(targetLayer));
+        }
+
+        renderAdminStops();
+        updateAdminStats();
+        if (drawingMode) syncStudioSelectedStopVisuals();
     } catch (err) {
         console.error("Error al refrescar paradas físicas", err);
     }
@@ -210,7 +664,7 @@ function renderStudioRoute() {
 function updateStudioCounter() {
     const counterEl = document.getElementById('studio-points-counter');
     if (counterEl) {
-        counterEl.innerHTML = `📍 ${drawnCoordinates.length} puntos trazados | 🚏 ${selectedStopIds.length} paradas vinculadas`;
+        counterEl.textContent = `${drawnCoordinates.length} puntos · ${selectedStopIds.length} paradas`;
     }
     
     if (typeof renderStopSequenceManager === 'function') {
@@ -298,13 +752,7 @@ function renderStopSequenceManager() {
         removeBtn.onclick = () => {
             selectedStopIds.splice(index, 1);
             updateStudioCounter();
-            // Revertir estilo visual del marcador en el mapa
-            const markerDiv = document.getElementById(`physical-stop-${stop.id}`);
-            if (markerDiv) {
-                markerDiv.style.backgroundColor = 'white';
-                markerDiv.style.borderColor = '#94a3b8';
-                markerDiv.style.transform = 'scale(1)';
-            }
+            setPhysicalStopMarkerState(stop.id, false);
         };
 
         btnsDiv.appendChild(upBtn);
@@ -329,9 +777,9 @@ function moveStopInSequence(index, direction) {
     renderStopSequenceManager();
 }
 
-function startDirectStudioMode() {
-    if (drawingMode && drawnCoordinates.length > 0) {
-        if (!confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Estás seguro de que deseas iniciar un nuevo trazado desde cero y descartar el progreso actual?`)) {
+async function startDirectStudioMode() {
+    if (drawingMode) {
+        if (!(await confirmDiscardStudioChanges('iniciar un nuevo trazado desde cero'))) {
             return;
         }
     }
@@ -345,27 +793,34 @@ function startDirectStudioMode() {
 
     selectedRouteId = null; // null indica que estamos creando una ruta nueva desde cero en el Studio
     drawingMode = true;
-    stopCreationMode = false;
+    importedRouteDraftMeta = null;
+    setStopPlacementMode({ active: false });
     drawnCoordinates = [];
     selectedStopIds = [];
     studioBaseColor = '#ff4b2b';
+    captureStudioBaseline();
     
     document.getElementById('admin-tool-indicator').classList.add('visible');
+    const controlsHud = document.getElementById('studio-controls-hud');
+    if (controlsHud) {
+        controlsHud.classList.add('visible');
+        minimizeStudioHudOnCompactScreen();
+    }
     document.getElementById('admin-draw-actions').style.display = 'flex';
     document.getElementById('main-list-section').style.display = 'none';
 
     const btnSave = document.getElementById('btn-save-draw');
-    if (btnSave) btnSave.innerHTML = `🚀 Finalizar: Datos y Mandar a BD ➔`;
+    if (btnSave) btnSave.textContent = 'Guardar ruta y trazado';
 
     renderStudioRoute();
     updateStudioCounter();
-    showToast('🗺️ Studio Activo: Haz clics en las calles para dibujar el trayecto o importa con JSON/SQL.');
+    showToast('Modo trazado activo: haz clic en las calles para dibujar o importa KML/JSON/SQL/GPX.');
 }
 
-// Inicia el modo de creación de nueva ruta en el mapa
+// Inicia el modo de edición de trazado de ruta en el mapa
 async function startTrazadoMode(routeId, color) {
-    if (drawingMode && selectedRouteId !== routeId && drawnCoordinates.length > 0) {
-        if (!confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en la ruta actual. ¿Estás seguro de que deseas cambiar a otra ruta y descartar las modificaciones no guardadas?`)) {
+    if (drawingMode && selectedRouteId !== routeId) {
+        if (!(await confirmDiscardStudioChanges('cambiar a otra ruta'))) {
             return;
         }
     }
@@ -381,28 +836,34 @@ async function startTrazadoMode(routeId, color) {
 
     selectedRouteId = routeId;
     drawingMode = true;
-    stopCreationMode = false;
+    setStopPlacementMode({ active: false });
     studioBaseColor = color || (route ? route.color : '#6366f1');
 
     drawnCoordinates = [];
     tempMarkers = [];
     selectedStopIds = [];
+    captureStudioBaseline();
     
     // UI
     document.getElementById('admin-tool-indicator').classList.add('visible');
+    const controlsHud = document.getElementById('studio-controls-hud');
+    if (controlsHud) {
+        controlsHud.classList.add('visible');
+        minimizeStudioHudOnCompactScreen();
+    }
     document.getElementById('admin-draw-actions').style.display = 'flex';
     document.getElementById('main-list-section').style.display = 'none';
 
     const btnSave = document.getElementById('btn-save-draw');
-    if (btnSave) btnSave.innerHTML = `💾 Actualizar Trazado en Base de Datos ➔`;
+    if (btnSave) btnSave.textContent = 'Actualizar trazado en BD';
 
     showToast('Cargando el trazado existente de la ruta desde la BD...');
 
     try {
-        // Cargar coordenadas y paradas reales desde la API del backend
+        // Cargar coordenadas y paradas reales desde la API de admin (soporta rutas activas y ocultas)
         const [coords, stops] = await Promise.all([
-            Api.getRouteCoordinates(routeId),
-            Api.getRouteStops(routeId)
+            Api.getAdminRouteCoordinates(routeId),
+            Api.getAdminRouteStops(routeId)
         ]);
 
         if (coords && coords.length > 0) {
@@ -435,8 +896,10 @@ async function startTrazadoMode(routeId, color) {
             });
         }
 
+        captureStudioBaseline();
         renderStudioRoute();
         updateStudioCounter();
+        syncStudioSelectedStopVisuals();
         
         if (drawnCoordinates.length > 0) {
             const bounds = L.latLngBounds(drawnCoordinates.map(c => [c.latitude, c.longitude]));
@@ -536,13 +999,7 @@ function addStopToRouteDrawing(stop) {
     }
     
     selectedStopIds.push(stop.id);
-
-    // Cambiar color visual de la parada física elegida temporalmente
-    const markerEl = document.getElementById(`physical-stop-${stop.id}`);
-    if (markerEl) {
-        markerEl.style.backgroundColor = '#10b981'; // Verde para indicar asignada
-        markerEl.style.transform = 'scale(1.3)';
-    }
+    setPhysicalStopMarkerState(stop.id, true);
 
     updateStudioCounter();
     showToast(`Parada "${stop.name}" añadida como parada #${selectedStopIds.length} de la ruta.`);
@@ -551,7 +1008,7 @@ function addStopToRouteDrawing(stop) {
 // Guarda la geometría dibujada o pasa al paso de datos si es creación
 async function saveRouteGeometry() {
     if (drawnCoordinates.length < 2) {
-        showToast('Dibuja al menos 2 puntos en el mapa o importa desde JSON/SQL antes de continuar', 'error');
+        showToast('Dibuja al menos 2 puntos en el mapa o importa desde JSON/SQL/GPX antes de continuar', 'error');
         return;
     }
 
@@ -562,11 +1019,15 @@ async function saveRouteGeometry() {
     }
 
     try {
+        const savedRouteId = selectedRouteId;
         await Api.updateRouteGeometry(selectedRouteId, drawnCoordinates, selectedStopIds);
         showToast('Trazado y paradas guardadas con éxito en la Base de Datos');
         exitDrawingMode();
-        // Recargar ruta visual
-        selectRouteAdmin(selectedRouteId);
+        await Promise.all([refreshAdminRoutes(), refreshPhysicalStops()]);
+        if (savedRouteId) {
+            const card = document.querySelector(`.route-card[data-id="${savedRouteId}"]`);
+            selectRouteAdmin(savedRouteId, card);
+        }
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -577,9 +1038,14 @@ function exitDrawingMode() {
     drawingMode = false;
     historyStack = [];
     selectedRouteId = null;
+    importedRouteDraftMeta = null;
+    initialStudioCoordsSnapshot = '[]';
+    initialStudioStopsSnapshot = '[]';
     
-    // Ocultar banner
+    // Ocultar banner y guía flotante de controles
     document.getElementById('admin-tool-indicator').classList.remove('visible');
+    const controlsHud = document.getElementById('studio-controls-hud');
+    if (controlsHud) controlsHud.classList.remove('visible');
     document.getElementById('admin-draw-actions').style.display = 'none';
     document.getElementById('main-list-section').style.display = 'flex';
 
@@ -616,6 +1082,64 @@ function undoLastPoint() {
     redrawAllStudioMarkers();
 }
 
+function buildMirrorReturnCoords(sourceCoords, offsetMeters = 12) {
+    if (!Array.isArray(sourceCoords) || sourceCoords.length < 2) return [];
+    const mirrored = [];
+    for (let i = sourceCoords.length - 2; i >= 0; i--) {
+        const curr = sourceCoords[i];
+        const prev = sourceCoords[i + 1];
+        const next = sourceCoords[Math.max(i - 1, 0)];
+        const lat = Number(curr.latitude);
+        const lng = Number(curr.longitude);
+        const cosLat = Math.cos((lat * Math.PI) / 180) || 1;
+        const dx = (Number(next.longitude) - Number(prev.longitude)) * 111320 * cosLat;
+        const dy = (Number(next.latitude) - Number(prev.latitude)) * 111320;
+        const len = Math.hypot(dx, dy);
+
+        if (len > 0.01 && offsetMeters > 0) {
+            // Desplazamiento lateral a la derecha del sentido de regreso para poder arrastrar/borrar vértices sin empalmarse
+            const rx = dy / len;
+            const ry = -dx / len;
+            mirrored.push({
+                latitude: lat + (ry * offsetMeters) / 111320,
+                longitude: lng + (rx * offsetMeters) / (111320 * cosLat)
+            });
+        } else {
+            mirrored.push({ latitude: lat, longitude: lng });
+        }
+    }
+    return mirrored;
+}
+
+function mirrorStudioReturn() {
+    if (drawnCoordinates.length < 2) {
+        showToast('Traza al menos 2 puntos de la ida antes de generar el regreso espejo.', 'error');
+        return;
+    }
+    if (drawnCoordinates.length * 2 - 1 > 10000) {
+        showToast('El trazado resultante superaría el máximo permitido de puntos.', 'error');
+        return;
+    }
+
+    saveToHistory();
+    const returnPoints = buildMirrorReturnCoords(drawnCoordinates, 12);
+    drawnCoordinates = drawnCoordinates.concat(returnPoints);
+    redrawAllStudioMarkers();
+    showToast(`Regreso espejo agregado (${returnPoints.length} puntos). Edita tramos distintos o presiona Ctrl + Z para deshacer.`);
+}
+
+function clearStudioSelectedStops() {
+    if (selectedStopIds.length === 0) {
+        showToast('No hay paradas vinculadas para quitar.', 'info');
+        return;
+    }
+    const prevIds = [...selectedStopIds];
+    selectedStopIds = [];
+    prevIds.forEach(id => setPhysicalStopMarkerState(id, false));
+    updateStudioCounter();
+    showToast('Se desvincularon todas las paradas de la ruta (la línea se conserva).');
+}
+
 // -----------------------------------------------------
 // HERRAMIENTAS DE IMPORTACIÓN Y EXPORTACIÓN JSON/SQL (IDEA DE CLAUDE)
 // -----------------------------------------------------
@@ -640,58 +1164,305 @@ function openExportModal() {
 
 function openImportModal() {
     document.getElementById('import-textarea').value = '';
+    const fileInput = document.getElementById('import-file-input');
+    if (fileInput) fileInput.value = '';
+    detectedKmlTracks = [];
+    const kmlWrap = document.getElementById('import-kml-track-wrap');
+    if (kmlWrap) kmlWrap.style.display = 'none';
     document.getElementById('import-modal').style.display = 'flex';
+}
+
+function getKmlTags(root, localName) {
+    if (!root || !root.getElementsByTagName) return [];
+    const target = localName.toLowerCase();
+    return Array.from(root.getElementsByTagName('*')).filter(el => {
+        const name = el.localName || String(el.tagName || '').replace(/^.*:/, '');
+        return name.toLowerCase() === target;
+    });
+}
+
+function kmlColorToHex(rawColor) {
+    const clean = String(rawColor || '').trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{8}$/.test(clean)) {
+        const b = clean.slice(2, 4);
+        const g = clean.slice(4, 6);
+        const r = clean.slice(6, 8);
+        return `#${r}${g}${b}`.toLowerCase();
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+        return `#${clean}`.toLowerCase();
+    }
+    return null;
+}
+
+function prettifyKmlRouteName(rawName) {
+    const cleaned = String(rawName || '').replace(/\.kml$/i, '').replace(/[_]+/g, ' ').trim();
+    if (!cleaned) return '';
+    if (cleaned === cleaned.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(cleaned)) {
+        return cleaned.toLowerCase().replace(/\b\p{L}/gu, ch => ch.toUpperCase());
+    }
+    return cleaned;
+}
+
+function parseKmlCoordString(rawCoords, out) {
+    const tokens = String(rawCoords || '').trim().split(/\s+/);
+    for (const token of tokens) {
+        if (!token) continue;
+        const parts = token.split(',');
+        if (parts.length < 2) continue;
+        const lng = parseFloat(parts[0]);
+        const lat = parseFloat(parts[1]);
+        if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+
+        const prev = out.length > 0 ? out[out.length - 1] : null;
+        if (prev && Math.abs(prev.latitude - lat) < 1e-6 && Math.abs(prev.longitude - lng) < 1e-6) {
+            continue;
+        }
+        out.push({ latitude: lat, longitude: lng });
+    }
+}
+
+function extractKmlTracks(xmlText) {
+    const text = String(xmlText || '').trim();
+    if (!text.startsWith('<') || !/<kml\b/i.test(text)) return [];
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    if (doc.querySelector('parsererror')) return [];
+
+    // Construir tabla de colores Style / StyleMap (#id -> #RRGGBB)
+    const styleColors = new Map();
+    const styleMaps = new Map();
+    getKmlTags(doc, 'Style').forEach(st => {
+        const id = st.getAttribute('id');
+        if (!id) return;
+        const lineStyle = getKmlTags(st, 'LineStyle')[0];
+        const colorEl = lineStyle ? getKmlTags(lineStyle, 'color')[0] : null;
+        const hex = kmlColorToHex(colorEl ? colorEl.textContent : '');
+        if (hex) styleColors.set(`#${id}`, hex);
+    });
+    getKmlTags(doc, 'StyleMap').forEach(sm => {
+        const id = sm.getAttribute('id');
+        if (!id) return;
+        const pairs = getKmlTags(sm, 'Pair');
+        const normalPair = pairs.find(p => {
+            const k = getKmlTags(p, 'key')[0];
+            return k && k.textContent.trim().toLowerCase() === 'normal';
+        }) || pairs[0];
+        const urlEl = normalPair ? getKmlTags(normalPair, 'styleUrl')[0] : null;
+        if (urlEl && urlEl.textContent) {
+            styleMaps.set(`#${id}`, urlEl.textContent.trim());
+        }
+    });
+
+    const resolveTrackColor = (node) => {
+        const inlineColor = getKmlTags(node, 'LineStyle')[0];
+        if (inlineColor) {
+            const cEl = getKmlTags(inlineColor, 'color')[0];
+            const hex = kmlColorToHex(cEl ? cEl.textContent : '');
+            if (hex) return hex;
+        }
+        const styleUrlEl = getKmlTags(node, 'styleUrl')[0];
+        if (styleUrlEl && styleUrlEl.textContent) {
+            let ref = styleUrlEl.textContent.trim();
+            if (styleMaps.has(ref)) ref = styleMaps.get(ref);
+            if (styleColors.has(ref)) return styleColors.get(ref);
+        }
+        return null;
+    };
+
+    const docNameEl = getKmlTags(doc, 'Document')[0];
+    const docTitleEl = docNameEl ? Array.from(docNameEl.children || []).find(ch => (ch.localName || ch.tagName).toLowerCase() === 'name') : null;
+    const defaultName = prettifyKmlRouteName(docTitleEl ? docTitleEl.textContent : '') || 'Ruta KML';
+
+    const tracks = [];
+    getKmlTags(doc, 'Placemark').forEach((pm, idx) => {
+        const lines = getKmlTags(pm, 'LineString');
+        if (lines.length === 0) return;
+        const coords = [];
+        lines.forEach(ls => {
+            getKmlTags(ls, 'coordinates').forEach(cEl => parseKmlCoordString(cEl.textContent, coords));
+        });
+        if (coords.length < 2) return;
+
+        const nameEl = Array.from(pm.children || []).find(ch => (ch.localName || ch.tagName).toLowerCase() === 'name');
+        const trackName = prettifyKmlRouteName(nameEl ? nameEl.textContent : '') || (idx === 0 ? defaultName : `${defaultName} #${idx + 1}`);
+        tracks.push({
+            name: trackName,
+            color: resolveTrackColor(pm),
+            coords
+        });
+    });
+
+    if (tracks.length === 0) {
+        const looseLines = getKmlTags(doc, 'LineString');
+        const coords = [];
+        looseLines.forEach(ls => {
+            getKmlTags(ls, 'coordinates').forEach(cEl => parseKmlCoordString(cEl.textContent, coords));
+        });
+        if (coords.length >= 2) {
+            tracks.push({ name: defaultName, color: null, coords });
+        }
+    }
+    return tracks;
+}
+
+function refreshImportKmlTrackSelector(text) {
+    const wrap = document.getElementById('import-kml-track-wrap');
+    const select = document.getElementById('import-kml-track-select');
+    if (!wrap || !select) return;
+
+    detectedKmlTracks = extractKmlTracks(text);
+    select.innerHTML = '';
+    if (detectedKmlTracks.length <= 1) {
+        wrap.style.display = 'none';
+        return;
+    }
+
+    detectedKmlTracks.forEach((tr, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = `${idx + 1}. ${tr.name} (${tr.coords.length} pts)`;
+        select.appendChild(opt);
+    });
+    wrap.style.display = 'flex';
+}
+
+function extractGeoJsonLineCoords(node, out) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'FeatureCollection' && Array.isArray(node.features)) {
+        node.features.forEach(f => extractGeoJsonLineCoords(f, out));
+        return;
+    }
+    if (node.type === 'Feature' && node.geometry) {
+        extractGeoJsonLineCoords(node.geometry, out);
+        return;
+    }
+    if (node.type === 'LineString' && Array.isArray(node.coordinates)) {
+        node.coordinates.forEach(pair => {
+            if (Array.isArray(pair) && pair.length >= 2) {
+                const lng = parseFloat(pair[0]);
+                const lat = parseFloat(pair[1]);
+                if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                    out.push({ latitude: lat, longitude: lng });
+                }
+            }
+        });
+        return;
+    }
+    if (node.type === 'MultiLineString' && Array.isArray(node.coordinates)) {
+        node.coordinates.forEach(line => {
+            if (Array.isArray(line)) {
+                line.forEach(pair => {
+                    if (Array.isArray(pair) && pair.length >= 2) {
+                        const lng = parseFloat(pair[0]);
+                        const lat = parseFloat(pair[1]);
+                        if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                            out.push({ latitude: lat, longitude: lng });
+                        }
+                    }
+                });
+            }
+        });
+    }
 }
 
 function processImportedText() {
     const text = document.getElementById('import-textarea').value.trim();
     if (!text) {
-        showToast('Por favor pega un código JSON o sentencias SQL antes de procesar.', 'error');
+        showToast('Por favor carga un archivo o pega coordenadas en KML, JSON, GeoJSON, GPX o SQL.', 'error');
         return;
     }
 
     let parsedCoords = [];
+    let pendingMeta = null;
 
-    try {
-        if (text.startsWith('[') || text.startsWith('{')) {
-            const data = JSON.parse(text);
-            const arr = Array.isArray(data) ? data : (data.coordinates || data.points || []);
-            arr.forEach(item => {
-                const lat = parseFloat(item.lat || item.latitude || item.latitud || item[0]);
-                const lng = parseFloat(item.lng || item.lon || item.longitude || item.longitud || item[1]);
-                if (!isNaN(lat) && !isNaN(lng)) {
-                    parsedCoords.push({ latitude: lat, longitude: lng });
+    // 1. Intentar XML KML (Google Earth / Google My Maps: <LineString><coordinates>lng,lat,alt</coordinates>)
+    if (text.startsWith('<') && /<kml\b/i.test(text)) {
+        try {
+            const kmlTracks = detectedKmlTracks.length > 0 ? detectedKmlTracks : extractKmlTracks(text);
+            if (kmlTracks.length > 0) {
+                const selectEl = document.getElementById('import-kml-track-select');
+                const idx = selectEl ? (parseInt(selectEl.value, 10) || 0) : 0;
+                const chosen = kmlTracks[idx] || kmlTracks[0];
+                parsedCoords = chosen.coords.slice();
+                pendingMeta = {
+                    name: chosen.name || '',
+                    color: chosen.color || null
+                };
+            }
+        } catch (e) {}
+    }
+
+    // 2. Intentar XML GPX (<trkpt> / <rtept>)
+    if (parsedCoords.length === 0 && text.startsWith('<') && text.toLowerCase().includes('<gpx')) {
+        try {
+            const doc = new DOMParser().parseFromString(text, 'application/xml');
+            if (!doc.querySelector('parsererror')) {
+                const pts = doc.querySelectorAll('trkpt, rtept, wpt');
+                pts.forEach(pt => {
+                    const lat = parseFloat(pt.getAttribute('lat'));
+                    const lng = parseFloat(pt.getAttribute('lon'));
+                    if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                        parsedCoords.push({ latitude: lat, longitude: lng });
+                    }
+                });
+            }
+        } catch (e) {}
+    }
+
+    // 3. Intentar JSON / GeoJSON
+    if (parsedCoords.length === 0) {
+        try {
+            if (text.startsWith('[') || text.startsWith('{')) {
+                const data = JSON.parse(text);
+                if (data && !Array.isArray(data) && ['FeatureCollection', 'Feature', 'LineString', 'MultiLineString'].includes(data.type)) {
+                    extractGeoJsonLineCoords(data, parsedCoords);
+                } else {
+                    const arr = Array.isArray(data) ? data : (data.coordinates || data.points || []);
+                    arr.forEach(item => {
+                        const lat = parseFloat(item.lat ?? item.latitude ?? item.latitud ?? item[0]);
+                        const lng = parseFloat(item.lng ?? item.lon ?? item.longitude ?? item.longitud ?? item[1]);
+                        if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                            parsedCoords.push({ latitude: lat, longitude: lng });
+                        }
+                    });
                 }
-            });
+            }
+        } catch (e) {
+            // Ignorar si no es JSON, intentaremos con Regex SQL/texto
         }
-    } catch (e) {
-        // Ignorar si no es JSON, intentaremos con Regex
     }
 
     if (parsedCoords.length === 0) {
-        const regex = /(-?\d{1,2}\.\d{4,8})\s*(?:,|\s+)\s*(-?\d{1,3}\.\d{4,8})/g;
+        const regex = /(-?\d{1,3}\.\d{4,16})\s*(?:,|\s+)\s*(-?\d{1,3}\.\d{4,16})/g;
         let match;
         while ((match = regex.exec(text)) !== null) {
             const val1 = parseFloat(match[1]);
             const val2 = parseFloat(match[2]);
-            if (val1 > -90 && val1 < 90 && val2 > -180 && val2 < 180) {
+            if (val1 >= -90 && val1 <= 90 && val2 >= -180 && val2 <= 180) {
                 if (Math.abs(val1 - 23) < 5 && Math.abs(val2 - (-106)) < 5) {
                     parsedCoords.push({ latitude: val1, longitude: val2 });
-                } else if (Math.abs(val2 - 23) < 5 && Math.abs(val1 - (-106)) < 5) {
+                } else if (Math.abs(val2 - 23) < 5 && Math.abs(val1 - (-106)) < 5 && val2 >= -90 && val2 <= 90 && val1 >= -180 && val1 <= 180) {
                     parsedCoords.push({ latitude: val2, longitude: val1 });
                 } else {
                     parsedCoords.push({ latitude: val1, longitude: val2 });
                 }
+            } else if (val2 >= -90 && val2 <= 90 && val1 >= -180 && val1 <= 180) {
+                parsedCoords.push({ latitude: val2, longitude: val1 });
             }
         }
     }
 
     if (parsedCoords.length === 0) {
-        showToast('No se detectaron coordenadas válidas. Verifica el formato JSON o SQL.', 'error');
+        showToast('No se detectaron coordenadas válidas. Verifica el formato KML, JSON, GeoJSON, GPX o SQL.', 'error');
         return;
     }
 
+    saveToHistory();
     clearStudioDrawings(true);
+    importedRouteDraftMeta = pendingMeta;
+    if (!selectedRouteId && pendingMeta && pendingMeta.color) {
+        studioBaseColor = pendingMeta.color;
+    }
     
     const bounds = L.latLngBounds();
     parsedCoords.forEach(coord => {
@@ -720,9 +1491,16 @@ function processImportedText() {
     showToast(`⚡ ¡Importación exitosa! ${parsedCoords.length} puntos cargados al mapa.`, 'success');
 }
 
-function clearStudioDrawings(force = false) {
+async function clearStudioDrawings(force = false) {
     if (drawnCoordinates.length > 0 && (!force || force instanceof Event)) {
-        if (!confirm(`⚠️ ¿Estás seguro de que deseas limpiar todo el lienzo? Se borrarán los ${drawnCoordinates.length} puntos trazados actualmente en el Studio.`)) {
+        const ok = await showAdminConfirm({
+            title: 'Limpiar trazado',
+            message: `Se borrarán los ${drawnCoordinates.length} puntos trazados actualmente en el lienzo. Esto no modifica la base de datos hasta que guardes.`,
+            confirmText: 'Limpiar lienzo',
+            cancelText: 'Cancelar',
+            danger: true
+        });
+        if (!ok) {
             return;
         }
     }
@@ -745,57 +1523,355 @@ function clearStudioDrawings(force = false) {
 // GESTIÓN DE PARADAS FÍSICAS (CREAR / ELIMINAR)
 // -----------------------------------------------------
 
-function startStopCreationMode() {
+let pendingStopEditDraft = null;
+
+async function startStopCreationMode() {
     if (drawingMode) {
-        if (drawnCoordinates.length > 0 && !confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Estás seguro de que deseas cambiar a crear paradas físicas y descartar tu trazado actual?`)) {
+        if (!(await confirmDiscardStudioChanges('crear paradas físicas'))) {
             return;
         }
         exitDrawingMode();
     }
 
-    stopCreationMode = true;
-    showToast('Haz clic en cualquier punto del mapa para colocar una parada física.');
+    pendingStopEditDraft = null;
+    setStopPlacementMode({
+        active: true,
+        targetStopId: null,
+        message: 'Modo colocar parada: haz clic en cualquier punto del mapa.'
+    });
+    showToast('Haz clic en el mapa para colocar la nueva parada.');
 }
 
-// Muestra modal para ingresar nombre de la nueva parada
-function handleMapClickForStop(latlng) {
-    if (!stopCreationMode) return;
+async function startRelocateStopMode() {
+    const formId = document.getElementById('stop-form-id').value;
+    if (!formId) return;
 
-    stopCreationMode = false;
+    pendingStopEditDraft = {
+        id: Number(formId),
+        name: document.getElementById('stop-name').value.trim(),
+        type: document.getElementById('stop-type').value,
+        address: document.getElementById('stop-address').value.trim()
+    };
+    document.getElementById('stop-modal').style.display = 'none';
+    setStopPlacementMode({
+        active: true,
+        targetStopId: pendingStopEditDraft.id,
+        message: `Reubicando "${pendingStopEditDraft.name || 'parada'}": haz clic en la nueva posición del mapa.`
+    });
+    showToast('Haz clic en la nueva ubicación de la parada en el mapa.');
+}
 
+function escapeAdminHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function inferStopTypeFromOSM(osmClass, osmType) {
+    const cls = (osmClass || '').toLowerCase();
+    const t = (osmType || '').toLowerCase();
+    if (['hospital', 'clinic', 'doctors', 'pharmacy'].includes(t)) return 'hospital';
+    if (['school', 'university', 'college', 'kindergarten'].includes(t)) return 'escuela';
+    if (['bank', 'atm'].includes(t)) return 'banco';
+    if (['restaurant', 'cafe', 'fast_food', 'ice_cream'].includes(t)) return 'restaurante';
+    if (t === 'fuel') return 'gasolinera';
+    if (['bus_station', 'ferry_terminal'].includes(t) || cls === 'aeroway') return 'transporte';
+    if (['hotel', 'motel', 'hostel', 'resort', 'beach'].includes(t)) return 'hotel';
+    if (cls === 'shop' || ['supermarket', 'mall', 'marketplace', 'department_store'].includes(t)) return 'comercio';
+    if (cls === 'tourism' || cls === 'leisure' || ['park', 'museum', 'attraction', 'theatre', 'cinema'].includes(t)) return 'turistico';
+    if (cls === 'industrial') return 'empresa';
+    return 'parada';
+}
+
+function formatOSMAddress(item) {
+    const addr = item && item.address ? item.address : {};
+    const street = [addr.road, addr.house_number].filter(Boolean).join(' ');
+    const area = addr.suburb || addr.neighbourhood || addr.quarter || addr.residential || addr.city_district;
+    const parts = [street, area].filter(Boolean);
+    if (parts.length > 0) return parts.join(', ');
+    if (item && item.display_name) {
+        return item.display_name.split(',').slice(0, 3).map(s => s.trim()).join(', ');
+    }
+    return '';
+}
+
+function openStopModalWithData({ id = '', name = '', latitude, longitude, type = 'parada', address = '' }) {
     const stopModal = document.getElementById('stop-modal');
+    const idInput = document.getElementById('stop-form-id');
+    const titleEl = document.getElementById('stop-modal-title');
+    const submitBtn = document.getElementById('stop-submit-btn');
+    const relocateBtn = document.getElementById('btn-relocate-stop');
+    const isEdit = Boolean(id);
+
+    if (idInput) idInput.value = isEdit ? String(id) : '';
+    if (titleEl) titleEl.textContent = isEdit ? 'Editar parada' : 'Nueva parada';
+    if (submitBtn) submitBtn.textContent = isEdit ? 'Actualizar parada' : 'Guardar parada';
+    if (relocateBtn) relocateBtn.style.display = isEdit ? 'flex' : 'none';
+
+    document.getElementById('stop-name').value = name;
+    document.getElementById('stop-type').value = type || 'parada';
+    document.getElementById('stop-address').value = address || '';
+    document.getElementById('stop-latitude').value = Number(latitude).toFixed(6);
+    document.getElementById('stop-longitude').value = Number(longitude).toFixed(6);
+
     stopModal.style.display = 'flex';
-    
-    document.getElementById('stop-latitude').value = latlng.lat;
-    document.getElementById('stop-longitude').value = latlng.lng;
     document.getElementById('stop-name').focus();
 }
 
-// Guarda la nueva parada física
+function openEditStopModal(stopId) {
+    const stop = physicalStopsData.find(s => s.id === Number(stopId));
+    if (!stop) {
+        showToast('No se encontró la parada seleccionada.', 'error');
+        return;
+    }
+    pendingStopEditDraft = null;
+    openStopModalWithData({
+        id: stop.id,
+        name: stop.name || '',
+        latitude: stop.latitude,
+        longitude: stop.longitude,
+        type: stop.type || 'parada',
+        address: stop.address || ''
+    });
+}
+
+async function fetchReverseOSMForStop(lat, lng) {
+    try {
+        const url = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&addressdetails=1`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const stopModal = document.getElementById('stop-modal');
+        if (!stopModal || stopModal.style.display === 'none') return;
+
+        const addressInput = document.getElementById('stop-address');
+        const nameInput = document.getElementById('stop-name');
+        const typeSelect = document.getElementById('stop-type');
+
+        const formattedAddr = formatOSMAddress(data);
+        if (addressInput && !addressInput.value.trim() && formattedAddr) {
+            addressInput.value = formattedAddr;
+        }
+        if (nameInput && !nameInput.value.trim() && data.name) {
+            nameInput.value = data.name;
+        }
+        if (typeSelect && typeSelect.value === 'parada' && (data.category || data.type)) {
+            typeSelect.value = inferStopTypeFromOSM(data.category, data.type);
+        }
+    } catch (err) {
+        console.warn('No se pudo autocompletar dirección con OSM:', err);
+    }
+}
+
+async function searchAdminOSMPlaces(query) {
+    const dropdown = document.getElementById('admin-osm-suggestions');
+    if (!dropdown) return;
+
+    const trimmed = (query || '').trim();
+    if (trimmed.length < 3) {
+        dropdown.style.display = 'none';
+        return;
+    }
+
+    dropdown.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.82rem;">Buscando en OpenStreetMap...</div>`;
+    dropdown.style.display = 'block';
+
+    try {
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(trimmed + ', Mazatlan, Sinaloa')}&format=json&limit=6&addressdetails=1`;
+        const response = await fetch(url);
+        const data = await response.json();
+        adminOsmSearchResults = Array.isArray(data) ? data : [];
+
+        if (adminOsmSearchResults.length === 0) {
+            dropdown.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.82rem;">Sin resultados en OSM para "${escapeAdminHtml(trimmed)}"</div>`;
+            return;
+        }
+
+        dropdown.innerHTML = adminOsmSearchResults.map((item, idx) => {
+            const firstPart = (item.display_name || '').split(',')[0].trim();
+            const title = item.name || (isNaN(firstPart) ? firstPart : ((item.display_name || '').split(',')[1] || firstPart).trim());
+            const address = formatOSMAddress(item) || item.display_name || 'Mazatlán, Sinaloa';
+            const stopType = inferStopTypeFromOSM(item.class, item.type);
+            const config = (typeof getStopIconConfig === 'function')
+                ? getStopIconConfig(title, stopType)
+                : { iconUrl: 'assets/icons/ui_ubicacion.svg', bgColor: '#059669', category: 'Lugar OSM' };
+
+            return `
+                <div class="search-suggestion-item" data-osm-idx="${idx}">
+                    <div class="suggestion-icon" style="background: ${config.bgColor};">
+                        <img src="${config.iconUrl}" alt="" style="filter: brightness(0) invert(1); width: 14px; height: 14px;">
+                    </div>
+                    <div class="suggestion-content">
+                        <div class="suggestion-title">${escapeAdminHtml(title)}</div>
+                        <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                            <span class="suggestion-badge" style="background: ${config.bgColor}15; color: ${config.bgColor};">${escapeAdminHtml(config.category || 'OSM')}</span>
+                            <span class="suggestion-subtitle">${escapeAdminHtml(address)}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        dropdown.querySelectorAll('[data-osm-idx]').forEach(el => {
+            el.addEventListener('click', () => {
+                const idx = parseInt(el.getAttribute('data-osm-idx'), 10);
+                if (!isNaN(idx) && adminOsmSearchResults[idx]) {
+                    selectAdminOSMPlace(adminOsmSearchResults[idx]);
+                }
+            });
+        });
+    } catch (err) {
+        console.error('Error buscando en OSM:', err);
+        dropdown.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--danger); font-size: 0.82rem;">Error al consultar OpenStreetMap</div>`;
+    }
+}
+
+function selectAdminOSMPlace(item) {
+    const dropdown = document.getElementById('admin-osm-suggestions');
+    if (dropdown) dropdown.style.display = 'none';
+
+    const lat = parseFloat(item.lat);
+    const lng = parseFloat(item.lon);
+    if (isNaN(lat) || isNaN(lng) || !mapInstance) return;
+
+    const firstPart = (item.display_name || '').split(',')[0].trim();
+    const title = item.name || (isNaN(firstPart) ? firstPart : ((item.display_name || '').split(',')[1] || firstPart).trim());
+    const address = formatOSMAddress(item);
+    const inferredType = inferStopTypeFromOSM(item.class, item.type);
+
+    const searchInput = document.getElementById('admin-osm-search-input');
+    if (searchInput) searchInput.value = title;
+
+    if (adminOsmSearchMarker) {
+        mapInstance.removeLayer(adminOsmSearchMarker);
+    }
+
+    const searchIcon = L.divIcon({
+        className: 'admin-osm-pin',
+        html: `<div style="background: #2563eb; border: 3px solid #ffffff; width: 28px; height: 28px; border-radius: 50%; box-shadow: 0 4px 12px rgba(37,99,235,0.45); display: flex; align-items: center; justify-content: center;">
+                 <img src="assets/icons/ui_ubicacion.svg" alt="" style="width: 14px; height: 14px; filter: brightness(0) invert(1); pointer-events: none;">
+               </div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+    });
+
+    adminOsmSearchMarker = L.marker([lat, lng], { icon: searchIcon }).addTo(mapInstance);
+    const popupContent = document.createElement('div');
+    popupContent.style.cssText = "font-family: 'Inter', sans-serif; min-width: 200px;";
+    popupContent.innerHTML = `
+        <span style="font-size: 0.68rem; background: rgba(0,92,151,0.1); color: #005C97; padding: 2px 7px; border-radius: 9999px; font-weight: 700; text-transform: uppercase; display: inline-block; margin-bottom: 5px;">OpenStreetMap</span>
+        <h4 style="margin: 0 0 4px 0; color: #0f172a; font-size: 0.92rem; font-weight: 700;">${escapeAdminHtml(title)}</h4>
+        <p style="margin: 0 0 4px 0; color: #475569; font-size: 0.78rem;">${escapeAdminHtml(address || 'Mazatlán, Sinaloa')}</p>
+        <p style="margin: 0 0 10px 0; color: #64748b; font-size: 0.72rem;">${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+        <button type="button" id="btn-save-osm-as-stop" class="btn btn-primary btn-full" style="padding: 7px 10px; font-size: 0.8rem;">
+            Guardar como parada
+        </button>
+    `;
+
+    popupContent.querySelector('#btn-save-osm-as-stop').addEventListener('click', () => {
+        mapInstance.closePopup();
+        openStopModalWithData({
+            name: title,
+            latitude: lat,
+            longitude: lng,
+            type: inferredType,
+            address
+        });
+    });
+
+    adminOsmSearchMarker.bindPopup(popupContent).addTo(mapInstance);
+    mapInstance.flyTo([lat, lng], 17, { duration: 1.0 });
+    setTimeout(() => {
+        if (adminOsmSearchMarker) adminOsmSearchMarker.openPopup();
+    }, 500);
+}
+
+// Muestra modal para crear parada o reubicar parada existente
+function handleMapClickForStop(latlng) {
+    if (!stopCreationMode) return;
+
+    const draft = pendingStopEditDraft;
+    const isRelocate = Boolean(relocateStopId && draft && draft.id === relocateStopId);
+    pendingStopEditDraft = null;
+    setStopPlacementMode({ active: false });
+
+    if (isRelocate) {
+        openStopModalWithData({
+            id: draft.id,
+            name: draft.name,
+            latitude: latlng.lat,
+            longitude: latlng.lng,
+            type: draft.type || 'parada',
+            address: draft.address || ''
+        });
+        showToast('Nueva posición aplicada. Pulsa "Actualizar parada" para guardar.');
+        return;
+    }
+
+    openStopModalWithData({
+        id: '',
+        name: '',
+        latitude: latlng.lat,
+        longitude: latlng.lng,
+        type: 'parada',
+        address: ''
+    });
+    fetchReverseOSMForStop(latlng.lat, latlng.lng);
+}
+
+// Guarda o actualiza la parada física
 async function handleStopFormSubmit(e) {
     e.preventDefault();
-    const name = document.getElementById('stop-name').value;
+    const idRaw = document.getElementById('stop-form-id') ? document.getElementById('stop-form-id').value.trim() : '';
+    const name = document.getElementById('stop-name').value.trim();
+    const type = document.getElementById('stop-type').value;
+    const address = document.getElementById('stop-address').value.trim();
     const latitude = parseFloat(document.getElementById('stop-latitude').value);
     const longitude = parseFloat(document.getElementById('stop-longitude').value);
 
+    if (isNaN(latitude) || isNaN(longitude)) {
+        showToast('Coordenadas de parada inválidas.', 'error');
+        return;
+    }
+
     try {
-        await Api.createStop({ name, latitude, longitude });
-        showToast('Parada física registrada correctamente.');
+        if (idRaw) {
+            await Api.updateStop(Number(idRaw), { name, latitude, longitude, type, address });
+            showToast('Parada física actualizada correctamente.');
+        } else {
+            await Api.createStop({ name, latitude, longitude, type, address });
+            showToast('Parada física registrada correctamente.');
+        }
+
+        pendingStopEditDraft = null;
         document.getElementById('stop-modal').style.display = 'none';
         document.getElementById('stop-form').reset();
-        await refreshPhysicalStops();
+        if (document.getElementById('stop-form-id')) document.getElementById('stop-form-id').value = '';
+        if (adminOsmSearchMarker) {
+            mapInstance.removeLayer(adminOsmSearchMarker);
+            adminOsmSearchMarker = null;
+        }
+        await Promise.all([refreshPhysicalStops(), refreshAdminRoutes()]);
     } catch (err) {
         showToast(err.message, 'error');
     }
 }
 
 async function confirmDeleteStop(stopId) {
-    if (confirm('¿Estás seguro de que deseas eliminar esta parada física? Se desvinculará de cualquier ruta que la use.')) {
+    const ok = await showAdminConfirm({
+        title: 'Eliminar parada física',
+        message: '¿Estás seguro de que deseas eliminar esta parada física? Se desvinculará de cualquier ruta que la use.',
+        confirmText: 'Eliminar parada',
+        cancelText: 'Cancelar',
+        danger: true
+    });
+    if (ok) {
         try {
             await Api.deleteStop(stopId);
             showToast('Parada física eliminada.');
             mapInstance.closePopup();
-            await refreshPhysicalStops();
+            await Promise.all([refreshPhysicalStops(), refreshAdminRoutes()]);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -813,6 +1889,7 @@ function openCreateRouteModal() {
     document.getElementById('route-desc-input').value = '';
     document.getElementById('route-color-input').value = '#ff4b2b';
     if (document.getElementById('route-price-input')) document.getElementById('route-price-input').value = '13.0';
+    if (document.getElementById('route-student-price-input')) document.getElementById('route-student-price-input').value = '3.5';
     if (document.getElementById('route-freq-input')) document.getElementById('route-freq-input').value = '10';
     document.getElementById('route-active-input').checked = true;
     
@@ -825,10 +1902,15 @@ function openCreateRouteModal() {
 function openCreateRouteModalFromStudio() {
     document.getElementById('route-modal-title').textContent = 'Finalizar y Crear Nueva Ruta';
     document.getElementById('route-form-id').value = '';
-    document.getElementById('route-name-input').value = '';
+    const prefillName = (importedRouteDraftMeta && importedRouteDraftMeta.name) ? importedRouteDraftMeta.name : '';
+    const prefillColor = (importedRouteDraftMeta && importedRouteDraftMeta.color && /^#[0-9a-fA-F]{6}$/.test(importedRouteDraftMeta.color))
+        ? importedRouteDraftMeta.color
+        : '#ff4b2b';
+    document.getElementById('route-name-input').value = prefillName;
     document.getElementById('route-desc-input').value = `Ruta trazada interactivamente desde el Studio con ${drawnCoordinates.length} puntos GPS y ${selectedStopIds.length} paradas.`;
-    document.getElementById('route-color-input').value = '#ff4b2b';
+    document.getElementById('route-color-input').value = prefillColor;
     if (document.getElementById('route-price-input')) document.getElementById('route-price-input').value = '13.0';
+    if (document.getElementById('route-student-price-input')) document.getElementById('route-student-price-input').value = '3.5';
     if (document.getElementById('route-freq-input')) document.getElementById('route-freq-input').value = '10';
     document.getElementById('route-active-input').checked = true;
     
@@ -848,6 +1930,7 @@ function openEditRouteModal(routeId) {
     document.getElementById('route-desc-input').value = route.description || '';
     document.getElementById('route-color-input').value = route.color;
     if (document.getElementById('route-price-input')) document.getElementById('route-price-input').value = route.price || '13.0';
+    if (document.getElementById('route-student-price-input')) document.getElementById('route-student-price-input').value = route.studentPrice != null ? route.studentPrice : '3.5';
     if (document.getElementById('route-freq-input')) document.getElementById('route-freq-input').value = route.frequencyMinutes || '10';
     document.getElementById('route-active-input').checked = route.active;
 
@@ -871,9 +1954,12 @@ async function handleRouteFormSubmit(e) {
     const color = document.getElementById('route-color-input').value;
     const active = document.getElementById('route-active-input').checked;
     const price = document.getElementById('route-price-input') ? (parseFloat(document.getElementById('route-price-input').value) || 13.0) : 13.0;
+    const studentPriceInput = document.getElementById('route-student-price-input');
+    const parsedStudentPrice = studentPriceInput ? parseFloat(studentPriceInput.value) : 3.5;
+    const studentPrice = !isNaN(parsedStudentPrice) && parsedStudentPrice >= 0 ? parsedStudentPrice : 3.5;
     const frequencyMinutes = document.getElementById('route-freq-input') ? (parseInt(document.getElementById('route-freq-input').value, 10) || 10) : 10;
 
-    const routeData = { name, description, color, active, price, frequencyMinutes };
+    const routeData = { name, description, color, active, price, studentPrice, frequencyMinutes };
 
     try {
         if (id) {
@@ -902,18 +1988,26 @@ async function handleRouteFormSubmit(e) {
 }
 
 async function confirmDeleteRoute(routeId) {
-    if (drawingMode && drawnCoordinates.length > 0) {
-        if (!confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Seguro que deseas eliminar esta ruta y descartar tu trabajo actual?`)) {
+    if (drawingMode) {
+        if (!(await confirmDiscardStudioChanges('eliminar esta ruta'))) {
             return;
         }
         exitDrawingMode();
     }
-    if (confirm('¿Estás seguro de que deseas eliminar esta ruta por completo? Esta acción es irreversible.')) {
+    const ok = await showAdminConfirm({
+        title: 'Eliminar ruta',
+        message: '¿Estás seguro de que deseas eliminar esta ruta por completo? Esta acción es irreversible.',
+        confirmText: 'Eliminar ruta',
+        cancelText: 'Cancelar',
+        danger: true
+    });
+    if (ok) {
         try {
             await Api.deleteRoute(routeId);
             showToast('Ruta eliminada.');
-            await refreshAdminRoutes();
+            selectedRouteId = null;
             clearMapDrawings();
+            await Promise.all([refreshAdminRoutes(), refreshPhysicalStops()]);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -921,71 +2015,110 @@ async function confirmDeleteRoute(routeId) {
 }
 
 // -----------------------------------------------------
-// Auto-asignar paradas cercanas al trazado actual (umbral de 150 metros)
-// Auto-asignar paradas cercanas al trazado actual (umbral de 300 metros) y ordenarlas por el trazado
+function projectStopToSegmentMeters(stopLat, stopLng, a, b) {
+    const cos = Math.cos((stopLat * Math.PI) / 180) || 1;
+    const ax = (Number(a.longitude) - stopLng) * 111320 * cos;
+    const ay = (Number(a.latitude) - stopLat) * 111320;
+    const bx = (Number(b.longitude) - stopLng) * 111320 * cos;
+    const by = (Number(b.latitude) - stopLat) * 111320;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+    const segLen = Math.sqrt(len2);
+    return {
+        dist: Math.hypot(ax + t * dx, ay + t * dy),
+        t,
+        segLen
+    };
+}
+
+// Auto-asignar y ordenar paradas por distancia acumulada continua (primer paso geográfico en circuitos Ida+Regreso)
 function autoAssignStopsByProximity() {
-    if (!drawingMode || drawnCoordinates.length === 0) {
-        showToast('⚠️ No hay ningún trazado activo para comparar.', true);
+    if (!drawingMode || drawnCoordinates.length < 2) {
+        showToast('Se necesitan al menos 2 puntos en el trazado activo para vincular paradas.', 'error');
         return;
     }
 
     if (!physicalStopsData || physicalStopsData.length === 0) {
-        showToast('⚠️ No hay paradas físicas cargadas en el mapa.', true);
+        showToast('No hay paradas físicas cargadas en el mapa.', 'error');
         return;
     }
 
+    const radiusSelect = document.getElementById('auto-assign-radius');
+    const parsedRadius = radiusSelect ? parseInt(radiusSelect.value, 10) : 250;
+    const thresholdMeters = (!isNaN(parsedRadius) && parsedRadius >= 50 && parsedRadius <= 1500) ? parsedRadius : 250;
+
+    const cumDist = [0];
+    for (let i = 0; i < drawnCoordinates.length - 1; i++) {
+        const a = drawnCoordinates[i];
+        const b = drawnCoordinates[i + 1];
+        const stepLen = projectStopToSegmentMeters(Number(a.latitude), Number(a.longitude), a, b).segLen;
+        cumDist.push(cumDist[i] + stepLen);
+    }
+
     let newlyAssignedCount = 0;
-    const thresholdMeters = 500; // 500 metros
-    
-    // Arreglo para guardar { stopId, closestPathIndex } de todas las paradas
-    let stopsWithOrder = [];
+    const stopsWithOrder = [];
 
     physicalStopsData.forEach(stop => {
-        const stopLatLng = L.latLng(stop.latitude, stop.longitude);
-        let minDistance = Infinity;
-        let closestIndex = -1;
+        const stopLat = Number(stop.latitude);
+        const stopLng = Number(stop.longitude);
+        let minDist = Infinity;
+        let bestCumFallback = 0;
+        const segHits = new Array(drawnCoordinates.length - 1);
 
-        // Encontrar la distancia mínima a la polilínea y el índice del punto más cercano
-        for (let i = 0; i < drawnCoordinates.length; i++) {
-            const coordLatLng = L.latLng(drawnCoordinates[i].latitude, drawnCoordinates[i].longitude);
-            const dist = mapInstance.distance(stopLatLng, coordLatLng);
-            if (dist < minDistance) {
-                minDistance = dist;
-                closestIndex = i;
+        for (let i = 0; i < drawnCoordinates.length - 1; i++) {
+            const hit = projectStopToSegmentMeters(stopLat, stopLng, drawnCoordinates[i], drawnCoordinates[i + 1]);
+            segHits[i] = hit;
+            if (hit.dist < minDist) {
+                minDist = hit.dist;
+                bestCumFallback = cumDist[i] + hit.t * hit.segLen;
             }
         }
 
         const isAlreadySelected = selectedStopIds.includes(stop.id);
+        if (!isAlreadySelected && minDist > thresholdMeters) {
+            return;
+        }
 
-        // Si ya estaba seleccionada o está dentro del umbral de proximidad
-        if (isAlreadySelected || minDistance <= thresholdMeters) {
-            stopsWithOrder.push({ id: stop.id, index: closestIndex });
-            
-            if (!isAlreadySelected) {
-                newlyAssignedCount++;
-                // Actualizar visualmente el marcador
-                const markerDiv = document.getElementById(`physical-stop-${stop.id}`);
-                if (markerDiv) {
-                    markerDiv.style.backgroundColor = '#10b981';
-                    markerDiv.style.borderColor = '#059669';
-                    markerDiv.style.transform = 'scale(1.2)';
+        const passLimit = minDist <= thresholdMeters
+            ? Math.min(thresholdMeters, Math.max(120, minDist + 80))
+            : minDist + 40;
+
+        let chosenCum = bestCumFallback;
+        for (let i = 0; i < segHits.length; i++) {
+            if (segHits[i].dist <= passLimit) {
+                let bestPassD = segHits[i].dist;
+                let bestPassCum = cumDist[i] + segHits[i].t * segHits[i].segLen;
+                for (let j = i + 1; j < segHits.length; j++) {
+                    const h2 = segHits[j];
+                    if (h2.dist < bestPassD) {
+                        bestPassD = h2.dist;
+                        bestPassCum = cumDist[j] + h2.t * h2.segLen;
+                    } else if (h2.dist > bestPassD + 45 && h2.dist > passLimit) {
+                        break;
+                    }
                 }
+                chosenCum = bestPassCum;
+                break;
             }
+        }
+
+        stopsWithOrder.push({ id: stop.id, cum: chosenCum });
+        if (!isAlreadySelected) {
+            newlyAssignedCount++;
+            setPhysicalStopMarkerState(stop.id, true);
         }
     });
 
-    // Ordenar las paradas basándose en su aparición a lo largo de la ruta (closestIndex de menor a mayor)
-    stopsWithOrder.sort((a, b) => a.index - b.index);
-    
-    // Sobrescribir el arreglo principal con el nuevo orden geográfico perfecto
+    stopsWithOrder.sort((a, b) => a.cum - b.cum);
     selectedStopIds = stopsWithOrder.map(s => s.id);
 
+    updateStudioCounter();
     if (newlyAssignedCount > 0) {
-        updateStudioCounter();
-        showToast(`✨ Se auto-asignaron y ordenaron geográficamente ${newlyAssignedCount} nuevas paradas.`);
+        showToast(`Se auto-vincularon ${newlyAssignedCount} paradas dentro de ${thresholdMeters} m y se ordenaron según el trazado.`);
     } else {
-        updateStudioCounter();
-        showToast(`✅ Las paradas han sido ordenadas geográficamente según el trazado.`);
+        showToast(`No hubo nuevas paradas dentro de ${thresholdMeters} m; secuencia ordenada según el trazado.`);
     }
 }
 
@@ -1048,9 +2181,9 @@ function setupAdminEventListeners(map) {
     }
 
     // Función de confirmación al presionar "Cancelar / Salir del Studio"
-    const handleConfirmExitStudio = () => {
-        if (drawingMode && drawnCoordinates.length > 0) {
-            if (!confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Estás seguro de que deseas salir y perder todas tus modificaciones?`)) {
+    const handleConfirmExitStudio = async () => {
+        if (drawingMode) {
+            if (!(await confirmDiscardStudioChanges('salir del Studio'))) {
                 return;
             }
         }
@@ -1062,14 +2195,175 @@ function setupAdminEventListeners(map) {
     document.getElementById('btn-cancel-draw').addEventListener('click', handleConfirmExitStudio);
     document.getElementById('btn-undo-draw').addEventListener('click', undoLastPoint);
     if (document.getElementById('btn-clear-draw')) document.getElementById('btn-clear-draw').addEventListener('click', clearStudioDrawings);
+    if (document.getElementById('btn-mirror-return')) document.getElementById('btn-mirror-return').addEventListener('click', mirrorStudioReturn);
+    if (document.getElementById('btn-clear-stops-draw')) document.getElementById('btn-clear-stops-draw').addEventListener('click', clearStudioSelectedStops);
     if (document.getElementById('btn-import-json')) document.getElementById('btn-import-json').addEventListener('click', openImportModal);
     if (document.getElementById('btn-auto-assign')) document.getElementById('btn-auto-assign').addEventListener('click', autoAssignStopsByProximity);
     if (document.getElementById('btn-export-json')) document.getElementById('btn-export-json').addEventListener('click', openExportModal);
     if (document.getElementById('btn-process-import')) document.getElementById('btn-process-import').addEventListener('click', processImportedText);
 
+    // Subida de archivos (.json / .geojson / .gpx / .sql) en Importar
+    const pickFileBtn = document.getElementById('btn-pick-import-file');
+    const importFileInput = document.getElementById('import-file-input');
+    if (pickFileBtn && importFileInput) {
+        pickFileBtn.addEventListener('click', () => importFileInput.click());
+        importFileInput.addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (file.size > 5 * 1024 * 1024) {
+                showToast('El archivo excede el límite de 5 MB.', 'error');
+                importFileInput.value = '';
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const content = String(reader.result || '');
+                document.getElementById('import-textarea').value = content;
+                refreshImportKmlTrackSelector(content);
+                showToast(`Archivo "${file.name}" cargado. Pulsa "Procesar y dibujar en mapa".`);
+            };
+            reader.onerror = () => showToast('No se pudo leer el archivo seleccionado.', 'error');
+            reader.readAsText(file, 'utf-8');
+        });
+    }
+    const importTextareaEl = document.getElementById('import-textarea');
+    if (importTextareaEl) {
+        importTextareaEl.addEventListener('input', (e) => {
+            refreshImportKmlTrackSelector(e.target.value || '');
+        });
+    }
+
     // Botones del panel para activar herramientas
+    const panelToggleBtn = document.getElementById('admin-panel-toggle');
+    if (panelToggleBtn) {
+        panelToggleBtn.addEventListener('click', () => {
+            const sidebar = document.getElementById('admin-sidebar') || document.querySelector('.admin-body .sidebar');
+            setAdminPanelCollapsed(!(sidebar && sidebar.classList.contains('admin-collapsed')));
+        });
+    }
+    window.addEventListener('resize', () => {
+        if (window.innerWidth > 1024) {
+            setAdminPanelCollapsed(false);
+        }
+    });
+
     document.getElementById('btn-create-route').addEventListener('click', startDirectStudioMode);
     document.getElementById('btn-create-stop').addEventListener('click', startStopCreationMode);
+    if (document.getElementById('btn-backup-catalog')) {
+        document.getElementById('btn-backup-catalog').addEventListener('click', downloadAdminBackupJson);
+    }
+    if (document.getElementById('btn-cancel-stop-mode')) {
+        document.getElementById('btn-cancel-stop-mode').addEventListener('click', () => {
+            pendingStopEditDraft = null;
+            setStopPlacementMode({ active: false });
+            showToast('Modo de colocación de parada cancelado.', 'info');
+        });
+    }
+    if (document.getElementById('btn-relocate-stop')) {
+        document.getElementById('btn-relocate-stop').addEventListener('click', startRelocateStopMode);
+    }
+
+    // Pestañas y filtros locales de Rutas / Paradas + botón rápido de huérfanas
+    const tabRoutes = document.getElementById('admin-tab-routes');
+    const tabStops = document.getElementById('admin-tab-stops');
+    if (tabRoutes) tabRoutes.addEventListener('click', () => switchAdminTab('routes'));
+    if (tabStops) tabStops.addEventListener('click', () => switchAdminTab('stops'));
+
+    const routeFilterInput = document.getElementById('admin-route-filter');
+    if (routeFilterInput) {
+        routeFilterInput.addEventListener('input', (e) => {
+            routeSearchText = e.target.value || '';
+            renderAdminRoutes();
+        });
+    }
+    document.querySelectorAll('#admin-route-status-filters [data-route-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            routeStatusFilter = btn.getAttribute('data-route-filter') || 'all';
+            document.querySelectorAll('#admin-route-status-filters .admin-chip').forEach(c => c.classList.remove('active'));
+            btn.classList.add('active');
+            renderAdminRoutes();
+        });
+    });
+
+    const stopFilterInput = document.getElementById('admin-stop-filter');
+    if (stopFilterInput) {
+        stopFilterInput.addEventListener('input', (e) => {
+            stopSearchText = e.target.value || '';
+            renderAdminStops();
+        });
+    }
+    const setStopStatusFilterUI = (filterVal) => {
+        stopStatusFilter = filterVal;
+        document.querySelectorAll('#admin-stop-status-filters .admin-chip').forEach(c => {
+            c.classList.toggle('active', c.getAttribute('data-stop-filter') === filterVal);
+        });
+        renderAdminStops();
+    };
+    document.querySelectorAll('#admin-stop-status-filters [data-stop-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            setStopStatusFilterUI(btn.getAttribute('data-stop-filter') || 'all');
+        });
+    });
+    const orphansBtn = document.getElementById('stat-orphans-btn');
+    if (orphansBtn) {
+        orphansBtn.addEventListener('click', () => {
+            switchAdminTab('stops');
+            setStopStatusFilterUI('orphan');
+        });
+    }
+
+    // Toggle de guía de controles de trazado y atajo Ctrl+Z / Escape
+    const studioHud = document.getElementById('studio-controls-hud');
+    const studioHudToggle = document.getElementById('studio-hud-toggle');
+    if (studioHud && studioHudToggle) {
+        studioHudToggle.addEventListener('click', () => {
+            const isMin = studioHud.classList.toggle('minimized');
+            studioHudToggle.textContent = isMin ? 'Ver controles' : 'Ocultar';
+        });
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && stopCreationMode) {
+            pendingStopEditDraft = null;
+            setStopPlacementMode({ active: false });
+            showToast('Colocación de parada cancelada.', 'info');
+            return;
+        }
+        if (!drawingMode) return;
+        const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            undoLastPoint();
+        }
+    });
+
+    // Buscador OSM para ubicar y crear paradas sin salir del panel
+    const adminOsmInput = document.getElementById('admin-osm-search-input');
+    const adminOsmDropdown = document.getElementById('admin-osm-suggestions');
+    if (adminOsmInput && adminOsmDropdown) {
+        adminOsmInput.addEventListener('input', (e) => {
+            clearTimeout(adminOsmSearchTimer);
+            const val = e.target.value;
+            if (val.trim().length < 3) {
+                adminOsmDropdown.style.display = 'none';
+                return;
+            }
+            adminOsmSearchTimer = setTimeout(() => searchAdminOSMPlaces(val), 450);
+        });
+        adminOsmInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                clearTimeout(adminOsmSearchTimer);
+                searchAdminOSMPlaces(adminOsmInput.value);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            const box = document.getElementById('admin-osm-search-box');
+            if (box && !box.contains(e.target)) {
+                adminOsmDropdown.style.display = 'none';
+            }
+        });
+    }
 
     // Submits de Formularios
     document.getElementById('route-form').addEventListener('submit', handleRouteFormSubmit);
@@ -1081,7 +2375,8 @@ function setupAdminEventListeners(map) {
     });
     document.getElementById('stop-modal-close').addEventListener('click', () => {
         document.getElementById('stop-modal').style.display = 'none';
-        stopCreationMode = false;
+        pendingStopEditDraft = null;
+        setStopPlacementMode({ active: false });
     });
     if (document.getElementById('import-modal-close')) {
         document.getElementById('import-modal-close').addEventListener('click', () => {
@@ -1111,17 +2406,27 @@ function setupAdminEventListeners(map) {
     // Logout en badge de usuario
     const userBadge = document.getElementById('user-badge');
     if (userBadge) {
-        userBadge.addEventListener('click', () => {
-            if (confirm('¿Deseas cerrar sesión?')) {
+        userBadge.addEventListener('click', async () => {
+            if (drawingMode && !(await confirmDiscardStudioChanges('cerrar sesión'))) {
+                return;
+            }
+            const ok = await showAdminConfirm({
+                title: 'Cerrar sesión',
+                message: '¿Deseas cerrar tu sesión de administrador?',
+                confirmText: 'Cerrar sesión',
+                cancelText: 'Cancelar',
+                danger: false
+            });
+            if (ok) {
                 Auth.logout();
             }
         });
     }
 
     // Botón de Volver a Vista de Usuario con protección anti-pérdida
-    document.getElementById('user-view-btn').addEventListener('click', () => {
-        if (drawingMode && drawnCoordinates.length > 0) {
-            if (!confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Estás seguro de que deseas volver al mapa de usuario y descartar tu trabajo?`)) {
+    document.getElementById('user-view-btn').addEventListener('click', async () => {
+        if (drawingMode) {
+            if (!(await confirmDiscardStudioChanges('volver al mapa público'))) {
                 return;
             }
         }
@@ -1130,21 +2435,21 @@ function setupAdminEventListeners(map) {
 
     // Protección universal contra recargas de pestaña, cierre de ventana o navegación del navegador
     window.addEventListener('beforeunload', (e) => {
-        if (drawingMode && drawnCoordinates.length > 0) {
+        if (hasUnsavedStudioChanges()) {
             e.preventDefault();
-            e.returnValue = `⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Seguro que quieres salir y perder tus cambios?`;
+            e.returnValue = 'Tienes cambios sin guardar en el Studio.';
             return e.returnValue;
         }
     });
 
     // Protección contra el botón "Atrás" (flecha atrás o botón de ratón) del navegador
-    window.addEventListener('popstate', (e) => {
-        if (drawingMode && drawnCoordinates.length > 0) {
-            if (!confirm(`⚠️ Tienes ${drawnCoordinates.length} puntos trazados sin guardar en el Studio. ¿Estás seguro de que deseas volver atrás en el navegador y perder todo el trazado actual?`)) {
-                // El usuario canceló: restaurar el estado en el historial para evitar que el navegador salga de admin.html
-                try {
-                    history.pushState({ studio: true }, "Studio de Trazado", window.location.href);
-                } catch (err) {}
+    window.addEventListener('popstate', async () => {
+        if (drawingMode && hasUnsavedStudioChanges()) {
+            // Mantener la URL actual en el historial mientras responde en el modal personalizado
+            try {
+                history.pushState({ studio: true }, "Studio de Trazado", window.location.href);
+            } catch (err) {}
+            if (!(await confirmDiscardStudioChanges('volver atrás en el navegador'))) {
                 return;
             }
             exitDrawingMode();

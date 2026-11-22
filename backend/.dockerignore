@@ -1,0 +1,5 @@
+target/
+*.py
+*.txt
+*.log
+.mvn/wrapper/*.jar

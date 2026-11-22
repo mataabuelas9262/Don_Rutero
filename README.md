@@ -89,16 +89,14 @@ Al iniciar el backend, Spring Boot servirá automáticamente la aplicación web 
 
 ---
 
-## Credenciales de Acceso (Demo)
+## Configuración de Acceso y Seguridad
 
-El script `schema.sql` incluye dos cuentas preconfiguradas para probar la aplicación inmediatamente:
+El proyecto toma la configuración sensible desde variables de entorno (consulta [`.env.example`](.env.example)):
 
-| Rol | Usuario | Contraseña | Permisos |
-| :--- | :--- | :--- | :--- |
-| **Administrador** | `admin` | `admin123` | Acceso completo al Panel de Administración y Studio GPS de Trazado. |
-| **Usuario Normal** | `usuario` | `user123` | Consulta de rutas, guardado en favoritos y reporte de sugerencias. |
-
-> **Nota:** Al registrar una cuenta nueva en la app, si utilizas un correo electrónico terminando en `@rutabus.com`, `@admin.com` o `@mazatlan.gob.mx`, el sistema te asignará automáticamente privilegios de Administrador.
+- `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`: conexión MySQL.
+- `JWT_SECRET`: clave HMAC-SHA256 de al menos 32 bytes para firmar sesiones (si se omite en local, se genera una efímera aleatoria al iniciar).
+- `ADMIN_DEFAULT_PASSWORD`: contraseña inicial para la cuenta administradora al inicializar una base de datos nueva (si ya iniciaste sesión como administrador, puedes cambiar tu contraseña en **Mi perfil → Cambiar contraseña**).
+- `CORS_ALLOWED_ORIGINS`, `EXPOSE_DEMO_CODES`, `SPRING_PROFILES_ACTIVE=prod`: configuración recomendada para despliegue en producción.
 
 ---
 

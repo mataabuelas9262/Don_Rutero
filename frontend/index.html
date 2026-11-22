@@ -7,8 +7,10 @@
     <meta name="description" content="Consulta las rutas de camiones y transporte público de Mazatlán, Sinaloa. Encuentra paradas, precios y frecuencias en tiempo real.">
     <link rel="icon" type="image/svg+xml" href="assets/icono_esquina.svg">
     
-    <!-- Leaflet CSS -->
+    <!-- Leaflet CSS + MarkerCluster -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" integrity="sha384-pmjIAcz2bAn0xukfxADbZIb3t8oRT9Sv0rvO+BR5Csr6Dhqq+nZs59P0pPKQJkEV" crossorigin="" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" integrity="sha384-wgw+aLYNQ7dlhK47ZPK7FRACiq7ROZwgFNg0m04avm4CaXS+Z9Y7nMu8yNjBKYC+" crossorigin="" />
     
     <!-- Estilos de la Aplicación -->
     <link rel="stylesheet" href="css/styles.css">
@@ -22,21 +24,34 @@
             <div id="map"></div>
         </div>
 
-        <!-- ========== NAVBAR FLOTANTE SUPERIOR ========== -->
+        <!-- ========== NAVBAR SUPERIOR ========== -->
         <nav class="top-navbar">
-            <!-- Hamburguesa para colapsar sidebar -->
-            <button id="sidebar-toggle" class="btn-icon" title="Mostrar/Ocultar panel">☰</button>
+            <!-- Hamburguesa para abrir menú -->
+            <button id="sidebar-toggle" class="btn-icon" title="Abrir menú">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="4" y1="7" x2="20" y2="7"></line>
+                    <line x1="4" y1="12" x2="20" y2="12"></line>
+                    <line x1="4" y1="17" x2="20" y2="17"></line>
+                </svg>
+            </button>
 
-            <!-- Logo SVG -->
-            <a href="index.html" class="navbar-brand">
-                <img src="assets/horizontal_compacto.svg" alt="Don Rutero" class="navbar-logo">
-            </a>
+            <!-- Logo SVG + ciudad -->
+            <div class="navbar-brand">
+                <a href="index.html" style="display:flex; align-items:center;">
+                    <img src="assets/horizontal_compacto.svg" alt="Don Rutero" class="navbar-logo">
+                </a>
+                <span class="navbar-city-tag"><span class="navbar-city-dot"></span>Mazatlán, Sin.</span>
+            </div>
 
             <!-- Spacer -->
             <div style="flex: 1;"></div>
 
             <!-- Acciones de usuario -->
             <div class="navbar-actions">
+                <button id="btn-donate-nav" type="button" class="btn-donate-nav" title="Apoyar proyecto (Donaciones)" aria-label="Apoyar el proyecto Don Rutero">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                    <span class="donate-nav-label">Apoyar</span>
+                </button>
                 <div id="user-badge" class="user-badge" style="display: none;"></div>
                 <button id="login-btn" class="btn btn-primary btn-login">
                     <img src="assets/icons/ui_usuario.svg" alt="" class="btn-svg-icon"> Iniciar Sesión
@@ -51,8 +66,12 @@
             </div>
         </nav>
 
-        <!-- ========== PANEL LATERAL FLOTANTE ========== -->
+        <!-- ========== PANEL LATERAL FLOTANTE / BOTTOM SHEET MÓVIL ========== -->
         <aside id="sidebar" class="sidebar">
+            <div id="mobile-sheet-handle" class="mobile-sheet-handle" role="button" tabindex="0" aria-label="Ajustar panel de rutas">
+                <span class="mobile-sheet-grip"></span>
+                <span id="mobile-sheet-label" class="mobile-sheet-label">Expandir</span>
+            </div>
             <div class="sidebar-content">
 
                 <!-- Mode Switcher (Rutas vs Planear Viaje) -->
@@ -71,21 +90,27 @@
                     <!-- 1. Buscador arriba (Mejor UX) -->
                     <div class="search-container">
                         <img src="assets/icons/ui_buscar.svg" alt="" class="search-icon-svg">
-                        <input type="text" id="search-input" class="search-input" placeholder="Buscar por nombre, colonia, destino..." autocomplete="off">
+                        <input type="text" id="search-input" class="search-input" placeholder="Buscar por nombre, colonia, destino..." autocomplete="off" style="padding-right: 36px;">
+                        <button id="btn-clear-search" type="button" class="input-clear-btn" title="Limpiar búsqueda" style="display: none;">&times;</button>
                         <div id="search-suggestions" class="search-suggestions-dropdown"></div>
                     </div>
 
-                    <!-- 2. Header de sección con Toggle de Lugares compacto -->
+                    <!-- 2. Header de sección con selector de tarifa Normal / Estudiante -->
                     <div class="section-header" style="margin-top:2px;">
                         <span class="section-title">
                             <img src="assets/icons/ui_camion.svg" alt="" style="width:16px; height:16px; vertical-align:-2px; margin-right:4px;">
                             Rutas
                         </span>
+                        <div class="fare-toggle-group" role="group" aria-label="Tipo de tarifa">
+                            <button type="button" class="fare-toggle-btn active" data-fare-mode="normal">Normal</button>
+                            <button type="button" class="fare-toggle-btn" data-fare-mode="student">Estudiante</button>
+                        </div>
                     </div>
 
                     <!-- 3. Filtros Rápidos (una sola línea con scroll horizontal suave) -->
                     <div class="filter-pills">
                         <button class="pill active" data-filter="all">Todas</button>
+                        <button class="pill" data-filter="favoritas"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>Favoritas</button>
                         <button class="pill" data-filter="turistico"><img src="assets/icons/ui_turistico.svg" alt="" class="pill-icon-svg"> Turístico</button>
                         <button class="pill" data-filter="centro"><img src="assets/icons/ui_centro.svg" alt="" class="pill-icon-svg"> Centro</button>
                         <button class="pill" data-filter="frecuente"><img src="assets/icons/ui_frecuente.svg" alt="" class="pill-icon-svg"> Frecuentes</button>
@@ -101,42 +126,74 @@
 
                 <!-- === Sección Planificador de Viajes "¿Cómo Llego?" === -->
                 <div id="trip-planner-section" style="display:none; flex-direction:column; gap:14px;">
-                    <div style="background: var(--bg-white, #ffffff); border: 1.5px solid var(--border); border-radius: var(--radius-lg); padding: 16px; box-shadow: 0 4px 15px rgba(0,0,0,0.06);">
-                        <h3 style="margin: 0 0 8px 0; font-size: 1rem; font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
-                            <img src="assets/icons/ui_buscar.svg" alt="" style="width: 18px; height: 18px;"> Planificador Inteligente
-                        </h3>
-                        <p style="margin: 0 0 14px 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4;">
-                            Escribe tu colonia, lugar o <b>Código Postal (C.P.)</b> de origen y destino para encontrar qué camión te lleva directo en Mazatlán.
+                    <div class="planner-card">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px;">
+                            <h3 class="planner-title" style="margin: 0;">
+                                <img src="assets/icons/ui_buscar.svg" alt="" style="width: 17px; height: 17px;"> Planea tu viaje
+                            </h3>
+                            <div class="fare-toggle-group" role="group" aria-label="Tipo de tarifa">
+                                <button type="button" class="fare-toggle-btn active" data-fare-mode="normal">Normal</button>
+                                <button type="button" class="fare-toggle-btn" data-fare-mode="student">Estudiante</button>
+                            </div>
+                        </div>
+                        <p class="planner-subtitle">
+                            Indica tu colonia, lugar o código postal de origen y destino para ver qué camión te lleva.
                         </p>
                         
                         <!-- Origen Input -->
-                        <div style="position: relative; margin-bottom: 12px;">
-                            <label style="font-size: 0.75rem; font-weight: 800; color: #16a34a; display: flex; align-items: center; margin-bottom: 4px;">
-                                <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#16a34a; margin-right:6px;"></span> ORIGEN (¿Desde dónde sales?)
-                            </label>
+                        <div class="planner-field">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                                <label class="planner-label" for="origin-input" style="margin-bottom: 0;">
+                                    <span class="planner-dot origin"></span> Origen
+                                </label>
+                                <button id="btn-pick-origin-map" type="button" style="background: none; border: none; padding: 0; font-size: 0.72rem; font-weight: 600; color: var(--primary); cursor: pointer;">Elegir en mapa</button>
+                            </div>
                             <div style="position: relative;">
-                                <input type="text" id="origin-input" class="search-input" placeholder="Col. Juárez, 82180, UAS, Mi Ubicación..." autocomplete="off" style="padding-right: 38px; border-color: #16a34a44;">
-                                <button id="btn-use-mylocation" title="Usar mi ubicación actual GPS" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px;">
-                                    <img src="assets/icons/ui_ubicacion.svg" alt="" style="width:16px; height:16px;">
+                                <input type="text" id="origin-input" class="search-input" placeholder="Col. Juárez, 82180, UAS..." autocomplete="off" style="padding-left: 14px; padding-right: 40px;">
+                                <button id="btn-use-mylocation" type="button" title="Usar mi ubicación actual GPS" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 5px; display: flex; align-items: center; justify-content: center; border-radius: 6px;">
+                                    <img src="assets/icons/ui_ubicacion.svg" alt="Mi ubicación" style="width:16px; height:16px;">
                                 </button>
                             </div>
                             <div id="origin-suggestions" class="search-suggestions-dropdown"></div>
                         </div>
+
+                        <div style="display: flex; justify-content: flex-end; margin: -4px 0 4px 0;">
+                            <button id="btn-swap-trip" type="button" onclick="swapTripOriginDestination()" title="Invertir origen y destino" style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; font-size: 0.72rem; font-weight: 700; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 4px; cursor: pointer;">
+                                <span style="font-size: 0.85rem; line-height: 1;">⇅</span> Invertir
+                            </button>
+                        </div>
                         
                         <!-- Destino Input -->
-                        <div style="position: relative; margin-bottom: 16px;">
-                            <label style="font-size: 0.75rem; font-weight: 800; color: #dc2626; display: flex; align-items: center; margin-bottom: 4px;">
-                                <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#dc2626; margin-right:6px;"></span> DESTINO (¿A dónde vas?)
-                            </label>
+                        <div class="planner-field" style="margin-bottom: 12px;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                                <label class="planner-label" for="destination-input" style="margin-bottom: 0;">
+                                    <span class="planner-dot destination"></span> Destino
+                                </label>
+                                <button id="btn-pick-dest-map" type="button" style="background: none; border: none; padding: 0; font-size: 0.72rem; font-weight: 600; color: var(--primary); cursor: pointer;">Elegir en mapa</button>
+                            </div>
                             <div style="position: relative;">
-                                <input type="text" id="destination-input" class="search-input" placeholder="Gran Acuario, Cerritos, 82110, Sharp..." autocomplete="off" style="border-color: #dc262644;">
+                                <input type="text" id="destination-input" class="search-input" placeholder="Gran Acuario, Cerritos, 82110..." autocomplete="off" style="padding-left: 14px;">
                             </div>
                             <div id="destination-suggestions" class="search-suggestions-dropdown"></div>
                         </div>
+
+                        <!-- Lugares clave de Mazatlán (selección rápida de destino) -->
+                        <div class="tourist-spots-block">
+                            <div class="tourist-spots-header">
+                                <span class="tourist-spots-title">Lugares clave de Mazatlán</span>
+                                <span class="tourist-spots-hint">Toca para fijar destino</span>
+                            </div>
+                            <div id="tourist-quick-chips" class="tourist-quick-chips" role="list" aria-label="Destinos turísticos clave de Mazatlán"></div>
+                        </div>
                         
-                        <button id="btn-find-trip" onclick="calculateTripRoute()" class="btn-primary" style="width: 100%; padding: 12px; font-weight: 800; font-size: 0.95rem; display: flex; align-items: center; justify-content: center; gap: 8px; background: linear-gradient(135deg, #2563eb, #1d4ed8); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3); border: none; border-radius: var(--radius-md); color: white; cursor: pointer;">
-                            <img src="assets/icons/ui_buscar.svg" alt="" style="width:16px; height:16px; filter:brightness(0) invert(1);"> Encontrar Mi Camión
-                        </button>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="btn-find-trip" type="button" onclick="calculateTripRoute()" class="btn btn-primary" style="flex: 1;">
+                                <img src="assets/icons/ui_buscar.svg" alt="" class="btn-svg-icon"> Buscar rutas
+                            </button>
+                            <button id="btn-clear-trip" type="button" onclick="clearTripPlanner()" class="btn btn-secondary" title="Limpiar origen, destino y mapa" style="padding: 0 14px; flex-shrink: 0;">
+                                Limpiar
+                            </button>
+                        </div>
                     </div>
                     
                     <div id="trip-results-container" style="display: flex; flex-direction: column; gap: 12px;"></div>
@@ -146,9 +203,17 @@
                 <div id="detail-panel" class="detail-panel">
                     <div class="detail-header">
                         <h2 id="detail-title" class="detail-title">Nombre Ruta</h2>
-                        <button id="close-detail-btn" class="close-btn" title="Cerrar">
-                            <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
-                        </button>
+                        <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                            <button id="detail-qr-btn" type="button" class="qr-action-btn" title="Código QR de paradero" aria-label="Generar código QR de esta ruta">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M14 14h3v3h-3z"></path><path d="M20 14v7"></path><path d="M14 20h3"></path><path d="M17 17h3"></path></svg>
+                            </button>
+                            <button id="detail-fav-btn" type="button" class="fav-route-btn" title="Guardar en favoritas" aria-label="Guardar en favoritas">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                            </button>
+                            <button id="close-detail-btn" class="close-btn" title="Cerrar">
+                                <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
+                            </button>
+                        </div>
                     </div>
                     <p id="detail-desc" class="detail-desc"></p>
                     <div id="detail-meta" class="route-meta" style="margin-bottom:4px;"></div>
@@ -161,6 +226,40 @@
 
             </div>
         </aside>
+
+        <!-- ========== HUD MODO "VOY A BORDO" ========== -->
+        <section id="onboard-hud" class="onboard-hud" style="display:none;" aria-live="polite" aria-label="Seguimiento a bordo">
+            <div id="onboard-route-bar" class="onboard-route-bar"></div>
+            <div class="onboard-hud-inner">
+                <div class="onboard-hud-top">
+                    <div style="min-width: 0;">
+                        <div class="onboard-status-row">
+                            <span id="onboard-live-dot" class="onboard-live-dot"></span>
+                            <span id="onboard-mode-badge" class="onboard-mode-badge">VOY A BORDO</span>
+                            <span id="onboard-route-name" class="onboard-route-name">Ruta</span>
+                        </div>
+                        <div id="onboard-next-stop" class="onboard-next-stop">Iniciando recorrido...</div>
+                        <div id="onboard-alight-info" class="onboard-alight-info"></div>
+                    </div>
+                    <button id="onboard-stop-btn" type="button" class="onboard-close-btn" title="Finalizar modo Voy a bordo" onclick="stopOnboardTrip()">Finalizar</button>
+                </div>
+
+                <div class="onboard-progress-track">
+                    <div id="onboard-progress-fill" class="onboard-progress-fill" style="width: 0%;"></div>
+                </div>
+
+                <div class="onboard-controls-row">
+                    <div class="onboard-source-pills">
+                        <button id="onboard-src-sim" type="button" class="onboard-pill active" onclick="setOnboardTrackingSource('sim')">Simular</button>
+                        <button id="onboard-src-gps" type="button" class="onboard-pill" onclick="setOnboardTrackingSource('gps')">GPS en vivo</button>
+                    </div>
+                    <div id="onboard-sim-controls" class="onboard-sim-controls">
+                        <button id="onboard-play-btn" type="button" class="onboard-ctrl-btn" onclick="toggleOnboardPlayPause()">Pausar</button>
+                        <button id="onboard-speed-btn" type="button" class="onboard-ctrl-btn" onclick="cycleOnboardSpeed()">1x</button>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         <!-- ========== FAB GEOLOCALIZACIÓN ========== -->
         <button id="fab-location" class="fab-location" title="Mi ubicación">
@@ -177,51 +276,52 @@
             <button id="notifications-close" class="form-close">
                 <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
             </button>
-            <div class="auth-header" style="margin-bottom: 20px;">
-                <div class="auth-icon-badge badge-blue" style="background: #e0e7ff; color: #4338ca;">
-                    <img src="assets/icons/ui_campana.svg" alt="" style="filter: invert(24%) sepia(85%) saturate(3015%) hue-rotate(228deg) brightness(91%) contrast(98%);">
+            <div class="auth-header" style="margin-bottom: 16px;">
+                <div class="auth-icon-badge badge-blue">
+                    <img src="assets/icons/ui_campana.svg" alt="">
                 </div>
-                <h2>Notificaciones</h2>
-                <p class="auth-subtitle">Novedades y estado de rutas en Mazatlán</p>
+                <h2>Avisos</h2>
+                <p class="auth-subtitle">Estado del servicio y rutas en Mazatlán</p>
             </div>
             
-            <div id="notifications-feed" style="display: flex; flex-direction: column; gap: 12px; max-height: 400px; overflow-y: auto; padding-right: 4px;">
-                <!-- Feed Item -->
-                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; display: flex; gap: 12px; align-items: flex-start;">
-                    <div style="background: #dcfce7; min-width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                        <img src="assets/icons/ui_camion.svg" alt="" style="width: 16px; filter: invert(41%) sepia(81%) saturate(464%) hue-rotate(85deg) brightness(93%) contrast(92%);">
+            <div id="notifications-feed" style="display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow-y: auto; padding-right: 4px;">
+                <div class="notice-card">
+                    <div class="notice-icon success">
+                        <img src="assets/icons/ui_moneda.svg" alt="">
                     </div>
                     <div>
-                        <h4 style="margin: 0 0 4px 0; font-size: 0.9rem; color: #1e293b; font-weight: 800;">Nuevas Rutas Añadidas</h4>
-                        <p style="margin: 0; font-size: 0.8rem; color: #475569; line-height: 1.4;">Se han integrado exitosamente rutas actualizadas de Águilas del Pacífico y Alianza.</p>
-                        <span style="font-size: 0.65rem; color: #94a3b8; margin-top: 6px; display: block;">Hace 2 horas</span>
+                        <h4 class="notice-title">Tarifa estudiantil: $3.50 MXN</h4>
+                        <p class="notice-body">Activa el modo <strong>Estudiante</strong> en Rutas o en "¿Cómo Llego?" para calcular tu viaje o transbordo usando credencial vigente / TIIE.</p>
+                        <span class="notice-time">Tarifa general: $13.00 – $16.00 MXN</span>
                     </div>
                 </div>
                 
-                <!-- Feed Item -->
-                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; display: flex; gap: 12px; align-items: flex-start;">
-                    <div style="background: #fee2e2; min-width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                        <img src="assets/icons/ui_alerta_desvio.svg" alt="" style="width: 16px; filter: invert(27%) sepia(82%) saturate(2250%) hue-rotate(345deg) brightness(88%) contrast(93%);">
+                <div class="notice-card">
+                    <div class="notice-icon info">
+                        <img src="assets/icons/ui_camion.svg" alt="">
                     </div>
                     <div>
-                        <h4 style="margin: 0 0 4px 0; font-size: 0.9rem; color: #1e293b; font-weight: 800;">Desvío: Sábalo Centro</h4>
-                        <p style="margin: 0; font-size: 0.8rem; color: #475569; line-height: 1.4;">Debido a obras en la Av. del Mar, la ruta tomará por Av. Ejército Mexicano temporalmente.</p>
-                        <span style="font-size: 0.65rem; color: #94a3b8; margin-top: 6px; display: block;">Ayer</span>
+                        <h4 class="notice-title">10 rutas trazadas en Mazatlán</h4>
+                        <p class="notice-body">Ya puedes consultar recorridos calle por calle (Pradera, Ébano, Milenio, Sábalo Centro, Mañanitas, San Joaquín, Jabalíes, Urías, Sirena y Zapata) y guardar tus favoritas.</p>
+                        <span class="notice-time">Horario habitual: 5:30 AM – 10:30 PM</span>
                     </div>
                 </div>
                 
-                <!-- Feed Item -->
-                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; display: flex; gap: 12px; align-items: flex-start;">
-                    <div style="background: #fef9c3; min-width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                        <img src="assets/icons/ui_campana.svg" alt="" style="width: 16px; filter: invert(65%) sepia(74%) saturate(614%) hue-rotate(2deg) brightness(97%) contrast(96%);">
+                <div class="notice-card">
+                    <div class="notice-icon info">
+                        <img src="assets/icons/ui_ubicacion.svg" alt="">
                     </div>
                     <div>
-                        <h4 style="margin: 0 0 4px 0; font-size: 0.9rem; color: #1e293b; font-weight: 800;">¡Bienvenidos a Don Rutero!</h4>
-                        <p style="margin: 0; font-size: 0.8rem; color: #475569; line-height: 1.4;">La plataforma ya cuenta con el nuevo planificador de viajes inteligente.</p>
-                        <span style="font-size: 0.65rem; color: #94a3b8; margin-top: 6px; display: block;">Hace 3 días</span>
+                        <h4 class="notice-title">Sentido de subida y transbordos</h4>
+                        <p class="notice-body">El planificador te indica en qué dirección pasa el camión, si te conviene cruzar la calle y dónde transbordar cuando no hay ruta directa.</p>
+                        <span class="notice-time">Disponible en "¿Cómo Llego?"</span>
                     </div>
                 </div>
             </div>
+
+            <button id="notifications-report-btn" type="button" class="btn btn-secondary btn-full" style="margin-top: 14px; font-size: 0.82rem;">
+                ¿Notaste un desvío o cambio? Reportar ruta
+            </button>
         </div>
     </div>
 
@@ -231,24 +331,28 @@
             <button id="account-close" class="form-close">
                 <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
             </button>
-            <div class="auth-header" style="margin-bottom: 24px;">
+            <div class="auth-header" style="margin-bottom: 20px;">
                 <div class="auth-icon-badge badge-blue">
                     <img src="assets/icons/ui_usuario.svg" alt="">
                 </div>
-                <h2 id="account-username">Mi Perfil</h2>
+                <h2 id="account-username">Mi perfil</h2>
                 <p class="auth-subtitle">Gestiona tu cuenta de Don Rutero</p>
             </div>
             
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-                <button class="btn btn-secondary" style="justify-content: flex-start; padding: 12px; font-size: 0.9rem;" onclick="showToast('Función Próximamente', 'info')">
-                    <img src="assets/icons/ui_correo.svg" alt="" style="width: 16px; margin-right: 8px;"> Cambiar Correo Electrónico
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+                <button id="btn-toggle-change-pwd" type="button" class="btn btn-secondary btn-full" style="justify-content: flex-start;">
+                    <img src="assets/icons/ui_candado.svg" alt="" style="width: 16px;"> Cambiar contraseña
                 </button>
-                <button class="btn btn-secondary" style="justify-content: flex-start; padding: 12px; font-size: 0.9rem;" onclick="showToast('Función Próximamente', 'info')">
-                    <img src="assets/icons/ui_candado.svg" alt="" style="width: 16px; margin-right: 8px;"> Cambiar Contraseña
-                </button>
-                <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 8px 0;">
-                <button id="account-logout-btn" class="btn btn-primary" style="background: #ef4444; color: white; border: none; justify-content: center; padding: 12px; font-size: 0.9rem;">
-                    Cerrar Sesión
+                <form id="change-password-form" style="display: none; flex-direction: column; gap: 8px; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    <div id="change-pwd-error" style="display: none; font-size: 0.76rem; color: var(--danger); font-weight: 600;"></div>
+                    <input type="password" id="current-password-input" class="form-control" placeholder="Contraseña actual" required autocomplete="current-password">
+                    <input type="password" id="new-password-input" class="form-control" placeholder="Nueva contraseña (mín. 8 caracteres)" required autocomplete="new-password">
+                    <input type="password" id="confirm-new-password-input" class="form-control" placeholder="Confirmar nueva contraseña" required autocomplete="new-password">
+                    <button type="submit" class="btn btn-primary btn-full" style="padding: 8px 12px; font-size: 0.82rem;">Guardar nueva contraseña</button>
+                </form>
+                <hr style="border: 0; border-top: 1px solid var(--border); margin: 6px 0;">
+                <button id="account-logout-btn" type="button" class="btn btn-danger btn-full">
+                    Cerrar sesión
                 </button>
             </div>
         </div>
@@ -306,9 +410,12 @@
         <div class="menu-header">
             <div class="menu-title-group">
                 <div class="menu-logo-icon">
-                    <img src="assets/icons/ui_camion.svg" alt="" style="width:20px; height:20px; filter: brightness(0) invert(1);">
+                    <img src="assets/icons/ui_camion.svg" alt="" style="width:18px; height:18px; filter: brightness(0) invert(1);">
                 </div>
-                <span class="menu-title">Menú</span>
+                <div>
+                    <span class="menu-title" style="display:block; line-height:1.1;">Don Rutero</span>
+                    <span style="font-size:0.72rem; color:var(--text-muted); font-weight:500;">Transporte urbano · Mazatlán</span>
+                </div>
             </div>
             <button id="close-menu-btn" class="btn-icon-round" title="Cerrar menú">
                 <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:16px; height:16px;">
@@ -358,6 +465,13 @@
                 </div>
                 <span class="menu-item-label">Avisos Legales</span>
             </div>
+
+            <div id="menu-donate-btn" class="menu-item menu-item-donate" role="button" tabindex="0">
+                <div class="menu-item-icon donate-icon">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                </div>
+                <span class="menu-item-label">Apoyar proyecto (Donaciones)</span>
+            </div>
         </div>
 
         <!-- Tarjeta inferior de Inicio de Sesión / Cuenta -->
@@ -373,7 +487,7 @@
             </div>
 
             <div class="menu-footer-version">
-                DON RUTERO - V1.0.0
+                Don Rutero · v1.0
             </div>
         </div>
     </aside>
@@ -431,7 +545,7 @@
                     <label for="report-desc" style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Descripción y Detalles</label>
                     <textarea id="report-desc" class="form-control" rows="3" placeholder="Describe el cambio, por dónde está pasando el camión o tu sugerencia..." required style="resize:vertical;"></textarea>
                 </div>
-                <button type="submit" class="btn btn-primary" style="width:100%; background:var(--accent); margin-top:4px;">Enviar Reporte</button>
+                <button type="submit" class="btn btn-primary btn-full" style="margin-top:4px;">Enviar reporte</button>
             </form>
         </div>
     </div>
@@ -449,7 +563,7 @@
                     <div class="auth-icon-badge badge-orange">
                         <img src="assets/icons/ui_escudo.svg" alt="">
                     </div>
-                    <h2>Crear Cuenta</h2>
+                    <h2>Crear cuenta</h2>
                     <p class="auth-subtitle">Únete a la comunidad de transporte en Mazatlán</p>
                 </div>
 
@@ -458,36 +572,36 @@
                     <span id="register-error-text">Error de validación</span>
                 </div>
 
-                <form id="register-form" style="display:flex; flex-direction:column; gap:16px;">
+                <form id="register-form" style="display:flex; flex-direction:column; gap:14px;">
                     <div class="form-group">
-                        <label for="register-email">Correo Electrónico</label>
+                        <label for="register-email">Correo electrónico</label>
                         <div class="input-icon-wrapper">
                             <img src="assets/icons/ui_correo.svg" class="input-icon" alt="">
                             <input type="email" id="register-email" class="form-control input-with-icon" placeholder="ejemplo@correo.com" required>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label for="register-username">Nombre de Usuario</label>
+                        <label for="register-username">Nombre de usuario</label>
                         <div class="input-icon-wrapper">
                             <img src="assets/icons/ui_usuario.svg" class="input-icon" alt="">
-                            <input type="text" id="register-username" class="form-control input-with-icon" placeholder="Ej. juan_perez (mínimo 3 letras)" required>
+                            <input type="text" id="register-username" class="form-control input-with-icon" placeholder="Ej. juan_perez (3-30 letras, números, . _ -)" required>
                         </div>
                     </div>
                     <div class="form-group">
                         <label for="register-password">Contraseña</label>
                         <div class="input-icon-wrapper">
                             <img src="assets/icons/ui_candado.svg" class="input-icon" alt="">
-                            <input type="password" id="register-password" class="form-control input-with-icon" placeholder="Mínimo 6 caracteres" required>
+                            <input type="password" id="register-password" class="form-control input-with-icon" placeholder="Mínimo 8 caracteres" required>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label for="register-confirm-password">Confirmar Contraseña</label>
+                        <label for="register-confirm-password">Confirmar contraseña</label>
                         <div class="input-icon-wrapper">
                             <img src="assets/icons/ui_candado_check.svg" class="input-icon" alt="">
                             <input type="password" id="register-confirm-password" class="form-control input-with-icon" placeholder="Repite tu contraseña" required>
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-primary" style="width:100%; margin-top:4px;">Siguiente: Verificar Correo ➔</button>
+                    <button type="submit" class="btn btn-primary btn-full" style="margin-top:4px;">Siguiente: Verificar correo</button>
                 </form>
                 <div class="form-footer" style="margin-top: 4px;">
                     ¿Ya tienes cuenta? <a href="#" id="open-login">Inicia sesión</a>
@@ -500,7 +614,7 @@
                     <div class="auth-icon-badge badge-cyan">
                         <img src="assets/icons/ui_correo.svg" alt="">
                     </div>
-                    <h2>Verificar Correo</h2>
+                    <h2>Verificar correo</h2>
                     <p class="auth-subtitle">Hemos enviado un código de 6 dígitos a:<br><strong id="register-email-display" style="color: var(--primary-dark); font-size: 0.95rem;"></strong></p>
                 </div>
 
@@ -514,11 +628,11 @@
                         <label for="register-code-input" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Ingresa tu código de verificación:</label>
                         <input type="text" id="register-code-input" class="form-control verification-input" placeholder="000000" maxlength="6" required autocomplete="off">
                     </div>
-                    <button type="submit" class="btn btn-primary" style="width:100%; margin-top:4px;">Verificar y Crear Cuenta</button>
+                    <button type="submit" class="btn btn-primary btn-full" style="margin-top:4px;">Verificar y crear cuenta</button>
                 </form>
                 <div class="form-footer" style="margin-top: 4px;">
-                    ¿No te llegó? <a href="#" id="resend-code-link">Reenviar código demo</a>
-                    <br><a href="#" id="back-to-step-1" style="font-size: 0.8rem; color: var(--text-muted); display: inline-block; margin-top: 6px;">⬅ Volver a corregir datos</a>
+                    ¿No te llegó? <a href="#" id="resend-code-link">Reenviar código</a>
+                    <br><a href="#" id="back-to-step-1" style="font-size: 0.8rem; color: var(--text-muted); display: inline-block; margin-top: 6px;">Volver a corregir datos</a>
                 </div>
             </div>
 
@@ -535,8 +649,8 @@
                 <div class="auth-icon-badge badge-cyan">
                     <img src="assets/icons/ui_candado_check.svg" alt="">
                 </div>
-                <h2>Recuperar Contraseña</h2>
-                <p class="auth-subtitle">Te enviaremos un código de seguridad para restablecer tu acceso al instante.</p>
+                <h2>Recuperar contraseña</h2>
+                <p class="auth-subtitle">Te enviaremos un código de seguridad para restablecer tu acceso.</p>
             </div>
 
             <div id="forgot-error-banner" class="auth-error-banner" style="display: none;">
@@ -550,25 +664,115 @@
 
             <form id="forgot-form" style="display:flex; flex-direction:column; gap:16px;">
                 <div class="form-group">
-                    <label for="forgot-email">Correo Electrónico Registrado</label>
+                    <label for="forgot-email">Correo electrónico registrado</label>
                     <div class="input-icon-wrapper">
                         <img src="assets/icons/ui_correo.svg" class="input-icon" alt="">
                         <input type="email" id="forgot-email" class="form-control input-with-icon" placeholder="ejemplo@correo.com" required>
                     </div>
                 </div>
-                <button type="submit" class="btn btn-primary" style="width:100%; margin-top:4px;">Enviar Enlace de Recuperación</button>
+                <button type="submit" class="btn btn-primary btn-full" style="margin-top:4px;">Enviar código de recuperación</button>
             </form>
             <div class="form-footer">
-                <a href="#" id="forgot-back-login">⬅ Volver a Iniciar Sesión</a>
+                <a href="#" id="forgot-back-login">Volver a iniciar sesión</a>
             </div>
         </div>
     </div>
 
-    <!-- Leaflet JS -->
+    <!-- Modal de Código QR de Paradero ("Tótem Digital Don Rutero") -->
+    <div id="qr-modal" class="form-overlay" style="display:none;">
+        <div class="form-card auth-card-premium" style="max-width: 390px; padding: 22px;">
+            <button id="qr-modal-close" class="form-close" type="button" title="Cerrar">
+                <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
+            </button>
+            <div class="auth-header" style="margin-bottom: 14px;">
+                <h2 style="font-size: 1.12rem; margin: 0 0 4px 0;">QR de Paradero</h2>
+                <p class="auth-subtitle" style="margin: 0;">Escanea o descarga la tarjeta lista para tótem físico</p>
+            </div>
+
+            <div class="qr-totem-card">
+                <div id="qr-accent-bar" class="qr-totem-bar"></div>
+                <div class="qr-totem-body">
+                    <span id="qr-entity-kind" class="qr-entity-kind">RUTA DE CAMIÓN</span>
+                    <h3 id="qr-entity-title" class="qr-entity-title">Nombre</h3>
+                    <p id="qr-entity-meta" class="qr-entity-meta"></p>
+                    <div class="qr-totem-canvas-wrap">
+                        <canvas id="qr-preview-canvas" width="204" height="204"></canvas>
+                    </div>
+                    <a id="qr-url-preview" class="qr-url-box" href="#" target="_blank" rel="noopener"></a>
+                </div>
+            </div>
+
+            <p id="qr-localhost-note" class="qr-localhost-note" style="display:none;">
+                En desarrollo local (`localhost`), el enlace apunta a tu equipo; al abrirlo desde tu red local o dominio público, el QR dirigirá directo a esa URL.
+            </p>
+
+            <div class="qr-modal-actions">
+                <button id="btn-download-qr" type="button" class="btn btn-primary" style="flex: 1;">
+                    Descargar tarjeta PNG
+                </button>
+                <button id="btn-copy-qr-url" type="button" class="btn btn-secondary" style="flex: 0 0 auto; padding: 0 14px;">
+                    Copiar enlace
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Donaciones ("Apoyar a Don Rutero") -->
+    <div id="donation-modal" class="form-overlay" style="display:none;">
+        <div class="form-card auth-card-premium" style="max-width: 420px; padding: 24px;">
+            <button id="donation-modal-close" class="form-close" type="button" title="Cerrar">
+                <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
+            </button>
+            <div class="auth-header" style="margin-bottom: 14px;">
+                <div class="auth-icon-badge donate-modal-badge">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                </div>
+                <h2 style="font-size: 1.15rem; margin: 0 0 4px 0;">Apoya a Don Rutero</h2>
+                <p class="auth-subtitle" style="margin: 0;">Proyecto ciudadano gratuito en Mazatlán. Cualquier aporte (desde $20 MXN) ayuda a cubrir servidores, mapas y nuevas rutas.</p>
+            </div>
+
+            <!-- Transferencia SPEI / Tarjeta -->
+            <div class="donate-spei-card">
+                <div class="donate-spei-header">
+                    <span class="donate-spei-title">Transferencia SPEI / Depósito</span>
+                    <span id="donate-bank-name" class="donate-bank-pill">Configura tu banco</span>
+                </div>
+                <div class="donate-detail-row">
+                    <span class="donate-detail-label">Titular</span>
+                    <span id="donate-beneficiary" class="donate-detail-value">Don Rutero Mazatlán</span>
+                </div>
+                <div class="donate-copy-row">
+                    <div style="min-width: 0;">
+                        <span class="donate-detail-label" style="display:block;">CLABE Interbancaria</span>
+                        <code id="donate-clabe" class="donate-code-value">0000 0000 0000 000000</code>
+                    </div>
+                    <button id="btn-copy-clabe" type="button" class="btn btn-secondary donate-copy-btn">Copiar</button>
+                </div>
+                <div id="donate-card-row" class="donate-copy-row" style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);">
+                    <div style="min-width: 0;">
+                        <span class="donate-detail-label" style="display:block;">Tarjeta débito (OXXO / Ventanilla)</span>
+                        <code id="donate-card-number" class="donate-code-value">0000 0000 0000 0000</code>
+                    </div>
+                    <button id="btn-copy-card" type="button" class="btn btn-secondary donate-copy-btn">Copiar</button>
+                </div>
+                <p id="donate-config-hint" class="donate-config-hint" style="display:none;">
+                    Reemplaza los datos de muestra en <code>DONATION_CONFIG</code> dentro de <code>js/app.js</code> con tu CLABE y enlace real antes de publicar.
+                </p>
+            </div>
+
+            <!-- Enlace externo -->
+            <button id="btn-donate-external" type="button" class="btn btn-primary btn-full" style="margin-top: 12px;">
+                <span id="donate-external-label">Donar en línea (Mercado Pago / PayPal / Ko-fi)</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Leaflet JS + MarkerCluster -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" integrity="sha384-eXVCORTRlv4FUUgS/xmOyr66XBVraen8ATNLMESp92FKXLAMiKkerixTiBvXriZr" crossorigin=""></script>
     
     <!-- Scripts -->
-
+    <script src="js/vendor/qrcode.min.js"></script>
     <script src="js/api.js"></script>
     <script src="js/auth.js"></script>
     <script src="js/map.js"></script>

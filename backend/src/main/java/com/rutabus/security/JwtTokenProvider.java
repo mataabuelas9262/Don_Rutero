@@ -4,12 +4,16 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -18,15 +22,34 @@ import java.util.function.Function;
 @Component
 public class JwtTokenProvider {
 
-    @Value("${jwt.secret}")
+    @Value("${jwt.secret:}")
     private String jwtSecret;
 
     @Value("${jwt.expiration}")
     private long jwtExpirationInMs;
 
+    private Key signingKey;
+
+    @PostConstruct
+    public void initKey() {
+        if (StringUtils.hasText(this.jwtSecret)) {
+            byte[] keyBytes = this.jwtSecret.getBytes(StandardCharsets.UTF_8);
+            if (keyBytes.length < 32) {
+                throw new IllegalStateException("JWT_SECRET debe tener al menos 32 bytes (256 bits).");
+            }
+            this.signingKey = Keys.hmacShaKeyFor(keyBytes);
+        } else {
+            // En desarrollo local sin variable JWT_SECRET, generar clave aleatoria efímera por arranque
+            byte[] randomBytes = new byte[48];
+            new SecureRandom().nextBytes(randomBytes);
+            this.jwtSecret = Base64.getEncoder().encodeToString(randomBytes);
+            this.signingKey = Keys.hmacShaKeyFor(this.jwtSecret.getBytes(StandardCharsets.UTF_8));
+            System.out.println("⚠️ [JwtTokenProvider] JWT_SECRET no definido: usando clave efímera aleatoria para esta sesión.");
+        }
+    }
+
     private Key getSigningKey() {
-        byte[] keyBytes = this.jwtSecret.getBytes(StandardCharsets.UTF_8);
-        return Keys.hmacShaKeyFor(keyBytes);
+        return this.signingKey;
     }
 
     public String generateToken(String username, String role) {
