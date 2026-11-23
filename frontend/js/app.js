@@ -4035,6 +4035,21 @@ function clearOnboardTimers() {
     }
 }
 
+function canUseOnboardSimulation() {
+    const host = window.location.hostname || '';
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+    const hasSimParam = new URLSearchParams(window.location.search).get('sim') === '1';
+    const isAdmin = typeof Auth !== 'undefined' && Auth.user && Auth.user.role === 'ROLE_ADMIN';
+    return isLocalHost || hasSimParam || isAdmin;
+}
+
+function shouldDefaultOnboardToSim() {
+    const host = window.location.hostname || '';
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+    const hasSimParam = new URLSearchParams(window.location.search).get('sim') === '1';
+    return isLocalHost || hasSimParam;
+}
+
 function startOnboardSimulationLoop() {
     clearOnboardTimers();
     const stepBaseM = Math.max(18, onboardState.totalDistM / 180);
@@ -4066,18 +4081,42 @@ function projectCoordOntoJourney(lat, lng) {
     return { bestCumM, offsetM: bestDist };
 }
 
+function setOnboardWaitingGpsHud(message) {
+    const nextStopEl = document.getElementById('onboard-next-stop');
+    const alightEl = document.getElementById('onboard-alight-info');
+    if (nextStopEl) {
+        nextStopEl.classList.remove('alert-near');
+        nextStopEl.textContent = message || 'Buscando tu ubicación GPS...';
+    }
+    if (alightEl) {
+        alightEl.textContent = 'Activa el permiso de ubicación para seguir tu viaje en tiempo real';
+    }
+}
+
 function startOnboardGpsWatch() {
     clearOnboardTimers();
+    const simAllowed = canUseOnboardSimulation();
     if (!navigator.geolocation) {
-        showToast('Tu navegador no soporta GPS en vivo; usando simulación.', 'error');
-        setOnboardTrackingSource('sim');
+        if (simAllowed) {
+            showToast('Tu navegador no soporta GPS en vivo; usando simulación.', 'error');
+            setOnboardTrackingSource('sim');
+        } else {
+            showToast('Tu navegador no soporta GPS en vivo.', 'error');
+            setOnboardWaitingGpsHud('GPS no disponible en este navegador');
+        }
         return;
     }
     if (window.isSecureContext === false) {
-        showToast('En celular sin HTTPS el GPS está bloqueado; puedes usar Simular.', 'error');
-        setOnboardTrackingSource('sim');
+        if (simAllowed) {
+            showToast('En celular sin HTTPS el GPS está bloqueado; puedes usar Simular.', 'error');
+            setOnboardTrackingSource('sim');
+        } else {
+            showToast('Se requiere conexión segura (HTTPS) para usar GPS en vivo.', 'error');
+            setOnboardWaitingGpsHud('GPS bloqueado sin HTTPS');
+        }
         return;
     }
+    setOnboardWaitingGpsHud('Buscando tu ubicación GPS...');
     showToast('GPS en vivo activado para tu viaje');
     onboardState.watchId = navigator.geolocation.watchPosition(
         (pos) => {
@@ -4089,7 +4128,9 @@ function startOnboardGpsWatch() {
             renderOnboardBusMarker(latitude, longitude, '#005C97');
         },
         (err) => {
-            showToast(`${getGeolocationErrorMessage(err)} Puedes usar Simular.`, 'error');
+            const msg = getGeolocationErrorMessage(err);
+            showToast(simAllowed ? `${msg} Puedes usar Simular.` : `${msg} Revisa los permisos de ubicación.`, 'error');
+            setOnboardWaitingGpsHud('Esperando señal GPS...');
         },
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
     );
@@ -4108,6 +4149,9 @@ function startOnboardTrip(optionIdx) {
 
     stopOnboardTrip({ silent: true });
 
+    const simAllowed = canUseOnboardSimulation();
+    const initialSource = (simAllowed && shouldDefaultOnboardToSim()) ? 'sim' : 'gps';
+
     onboardState.active = true;
     onboardState.option = opt;
     onboardState.points = journey.points;
@@ -4117,39 +4161,43 @@ function startOnboardTrip(optionIdx) {
     onboardState.currentDistM = 0;
     onboardState.paused = false;
     onboardState.speedMultiplier = 1;
-    onboardState.source = 'sim';
+    onboardState.source = initialSource;
     onboardState.notifiedNearLeg = false;
     onboardState.notifiedNearEnd = false;
 
     const hud = document.getElementById('onboard-hud');
     const playBtn = document.getElementById('onboard-play-btn');
     const speedBtn = document.getElementById('onboard-speed-btn');
+    const controlsRow = document.querySelector('#onboard-hud .onboard-controls-row');
     if (playBtn) playBtn.textContent = 'Pausar';
     if (speedBtn) speedBtn.textContent = '1x';
+    if (controlsRow) controlsRow.style.display = simAllowed ? 'flex' : 'none';
     if (hud) hud.style.display = 'block';
 
-    setOnboardTrackingSource('sim');
-    updateOnboardHudAtDistance(0);
+    setOnboardTrackingSource(initialSource);
     if (isMobileViewport()) setMobileSheetState('peek');
-    showToast('Modo "Voy a bordo" activo');
 }
 
 function setOnboardTrackingSource(source) {
-    onboardState.source = source === 'gps' ? 'gps' : 'sim';
+    const simAllowed = canUseOnboardSimulation();
+    onboardState.source = (source === 'sim' && simAllowed) ? 'sim' : 'gps';
     const simPill = document.getElementById('onboard-src-sim');
     const gpsPill = document.getElementById('onboard-src-gps');
     const simCtrls = document.getElementById('onboard-sim-controls');
+    const controlsRow = document.querySelector('#onboard-hud .onboard-controls-row');
+    if (controlsRow) controlsRow.style.display = simAllowed ? 'flex' : 'none';
     if (simPill) simPill.classList.toggle('active', onboardState.source === 'sim');
     if (gpsPill) gpsPill.classList.toggle('active', onboardState.source === 'gps');
-    if (simCtrls) simCtrls.style.display = onboardState.source === 'sim' ? 'inline-flex' : 'none';
+    if (simCtrls) simCtrls.style.display = (simAllowed && onboardState.source === 'sim') ? 'inline-flex' : 'none';
 
     if (!onboardState.active) return;
     if (onboardState.source === 'gps') {
+        updateOnboardHudAtDistance(onboardState.currentDistM);
         startOnboardGpsWatch();
     } else {
         startOnboardSimulationLoop();
+        updateOnboardHudAtDistance(onboardState.currentDistM);
     }
-    updateOnboardHudAtDistance(onboardState.currentDistM);
 }
 
 function toggleOnboardPlayPause() {
