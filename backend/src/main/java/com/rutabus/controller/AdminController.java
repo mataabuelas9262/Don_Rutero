@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -468,7 +469,7 @@ public class AdminController {
             if (body.containsKey("adminNote")) {
                 report.setAdminNote(note != null && !note.isEmpty() ? note : null);
             }
-            report.setUpdatedAt(LocalDateTime.now());
+            report.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
             return ResponseEntity.ok(routeReportRepository.save(report));
         }).orElse(ResponseEntity.notFound().build());
     }

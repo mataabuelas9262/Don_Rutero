@@ -255,7 +255,19 @@ function renderAdminReports() {
     filtered.forEach(rep => {
         const typeLabel = REPORT_TYPE_LABELS[rep.type] || 'Reporte';
         const stMeta = REPORT_STATUS_META[rep.status] || REPORT_STATUS_META.pendiente;
-        const dateStr = rep.createdAt ? new Date(rep.createdAt).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
+        let dateStr = '';
+        if (rep.createdAt) {
+            const rawStr = String(rep.createdAt).trim();
+            const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(rawStr);
+            const utcDate = new Date(hasTz ? rawStr : `${rawStr}Z`);
+            if (!isNaN(utcDate.getTime())) {
+                dateStr = utcDate.toLocaleString('es-MX', {
+                    timeZone: 'America/Mazatlan',
+                    dateStyle: 'short',
+                    timeStyle: 'short'
+                });
+            }
+        }
         const reporterText = rep.reporterUsername ? `Por: ${rep.reporterUsername}` : 'Anónimo';
 
         const card = document.createElement('div');

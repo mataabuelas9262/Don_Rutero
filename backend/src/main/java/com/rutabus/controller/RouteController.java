@@ -20,6 +20,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -138,7 +139,7 @@ public class RouteController {
         report.setRouteOrPlace(routeOrPlace);
         report.setDescription(description);
         report.setStatus("pendiente");
-        report.setCreatedAt(LocalDateTime.now());
+        report.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
 
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth != null && auth.isAuthenticated() && !"anonymousUser".equals(auth.getPrincipal())) {
