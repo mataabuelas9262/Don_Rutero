@@ -1462,6 +1462,7 @@ function extractKmlTracks(xmlText) {
         const trackName = prettifyKmlRouteName(nameEl ? nameEl.textContent : '') || (idx === 0 ? defaultName : `${defaultName} #${idx + 1}`);
         tracks.push({
             name: trackName,
+            docName: defaultName,
             color: resolveTrackColor(pm),
             coords
         });
@@ -1474,10 +1475,36 @@ function extractKmlTracks(xmlText) {
             getKmlTags(ls, 'coordinates').forEach(cEl => parseKmlCoordString(cEl.textContent, coords));
         });
         if (coords.length >= 2) {
-            tracks.push({ name: defaultName, color: null, coords });
+            tracks.push({ name: defaultName, docName: defaultName, color: null, coords });
         }
     }
     return tracks;
+}
+
+function mergeKmlTracksSequentially(tracks) {
+    if (!Array.isArray(tracks) || tracks.length === 0) return [];
+    const merged = [];
+    const pushPoint = (pt) => {
+        const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+        if (prev && Math.abs(prev.latitude - pt.latitude) < 1e-6 && Math.abs(prev.longitude - pt.longitude) < 1e-6) {
+            return;
+        }
+        merged.push({ latitude: pt.latitude, longitude: pt.longitude });
+    };
+    const sqDist = (a, b) => (a.latitude - b.latitude) ** 2 + (a.longitude - b.longitude) ** 2;
+
+    tracks.forEach((tr, idx) => {
+        if (!tr || !Array.isArray(tr.coords) || tr.coords.length === 0) return;
+        let pts = tr.coords;
+        if (idx > 0 && merged.length > 0 && pts.length > 1) {
+            const last = merged[merged.length - 1];
+            if (sqDist(last, pts[pts.length - 1]) < sqDist(last, pts[0])) {
+                pts = [...pts].reverse();
+            }
+        }
+        pts.forEach(pushPoint);
+    });
+    return merged;
 }
 
 function refreshImportKmlTrackSelector(text) {
@@ -1492,12 +1519,19 @@ function refreshImportKmlTrackSelector(text) {
         return;
     }
 
+    const totalPts = detectedKmlTracks.reduce((sum, tr) => sum + tr.coords.length, 0);
+    const mergeOpt = document.createElement('option');
+    mergeOpt.value = 'all';
+    mergeOpt.textContent = `Unir todos los trazos (Ida + Regreso · ${totalPts} pts)`;
+    select.appendChild(mergeOpt);
+
     detectedKmlTracks.forEach((tr, idx) => {
         const opt = document.createElement('option');
         opt.value = String(idx);
         opt.textContent = `${idx + 1}. ${tr.name} (${tr.coords.length} pts)`;
         select.appendChild(opt);
     });
+    select.value = 'all';
     wrap.style.display = 'flex';
 }
 
@@ -1556,13 +1590,23 @@ function processImportedText() {
             const kmlTracks = detectedKmlTracks.length > 0 ? detectedKmlTracks : extractKmlTracks(text);
             if (kmlTracks.length > 0) {
                 const selectEl = document.getElementById('import-kml-track-select');
-                const idx = selectEl ? (parseInt(selectEl.value, 10) || 0) : 0;
-                const chosen = kmlTracks[idx] || kmlTracks[0];
-                parsedCoords = chosen.coords.slice();
-                pendingMeta = {
-                    name: chosen.name || '',
-                    color: chosen.color || null
-                };
+                const selectedVal = selectEl ? selectEl.value : '0';
+                if (selectedVal === 'all' && kmlTracks.length > 1) {
+                    parsedCoords = mergeKmlTracksSequentially(kmlTracks);
+                    const firstColorTrack = kmlTracks.find(t => t.color);
+                    pendingMeta = {
+                        name: kmlTracks[0].docName || kmlTracks[0].name || '',
+                        color: firstColorTrack ? firstColorTrack.color : null
+                    };
+                } else {
+                    const idx = parseInt(selectedVal, 10) || 0;
+                    const chosen = kmlTracks[idx] || kmlTracks[0];
+                    parsedCoords = chosen.coords.slice();
+                    pendingMeta = {
+                        name: chosen.name || '',
+                        color: chosen.color || null
+                    };
+                }
             }
         } catch (e) {}
     }
