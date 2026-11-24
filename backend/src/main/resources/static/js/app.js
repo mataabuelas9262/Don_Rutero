@@ -2722,6 +2722,55 @@ function addTripTransferMarker(lat, lng, titleText) {
     return marker;
 }
 
+function collectStopsForTripOption(opt) {
+    const tripStops = [];
+    const seenIds = new Set();
+    const appendLegStops = (route, rawCoords) => {
+        if (!route || !Array.isArray(route.stopsList) || route.stopsList.length === 0) return;
+        const coords = (Array.isArray(rawCoords) && rawCoords.length >= 2)
+            ? rawCoords.map(normalizeLatLngPoint).filter(Boolean)
+            : (Array.isArray(route.coordinatesList) ? route.coordinatesList.map(normalizeLatLngPoint).filter(Boolean) : []);
+        if (coords.length === 0) {
+            route.stopsList.forEach(rs => {
+                const st = rs && rs.stop;
+                if (st && st.id != null && !seenIds.has(st.id)) {
+                    seenIds.add(st.id);
+                    tripStops.push({ stop: st, stopOrder: rs.stopOrder, color: route.color });
+                }
+            });
+            return;
+        }
+        const matched = [];
+        route.stopsList.forEach(rs => {
+            const st = rs && rs.stop;
+            if (!st || st.latitude == null || st.longitude == null || seenIds.has(st.id)) return;
+            let bestDist = Infinity;
+            let bestIdx = 0;
+            for (let i = 0; i < coords.length; i++) {
+                const d = calculateDistanceMeters(st.latitude, st.longitude, coords[i][0], coords[i][1]);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestIdx = i;
+                }
+            }
+            if (bestDist <= 300) {
+                seenIds.add(st.id);
+                matched.push({ bestIdx, entry: { stop: st, stopOrder: rs.stopOrder, color: route.color } });
+            }
+        });
+        matched.sort((a, b) => a.bestIdx - b.bestIdx);
+        matched.forEach(m => tripStops.push(m.entry));
+    };
+
+    if (opt.type === 'transfer') {
+        appendLegStops(opt.routeA, opt.travelCoordsA);
+        appendLegStops(opt.routeB, opt.travelCoordsB);
+    } else {
+        appendLegStops(opt.routeA, opt.travelCoords);
+    }
+    return tripStops;
+}
+
 function viewTripOptionOnMap(opt) {
     if (!opt || !mapInstance) return;
     clearMapDrawings();
@@ -2750,6 +2799,12 @@ function viewTripOptionOnMap(opt) {
         } else {
             drawRouteLine(opt.routeB.coordinatesList, opt.routeB.color, { fitBounds: false });
         }
+    }
+
+    // Mostrar específicamente las paradas de la(s) ruta(s) del viaje planeado / Voy a bordo
+    const tripStops = collectStopsForTripOption(opt);
+    if (typeof drawRouteStops === 'function' && tripStops.length > 0) {
+        drawRouteStops(tripStops, opt.routeA ? opt.routeA.color : '#6366f1', { markEndpoints: false, minIconZoom: 14 });
     }
 
     // Líneas punteadas de caminata al punto de subida, transbordo y bajada
@@ -4022,6 +4077,7 @@ function updateOnboardHudAtDistance(distM) {
         showToast('¡Prepárate para bajar! Tu parada está a menos de 300 m');
         if (navigator.vibrate) navigator.vibrate([160, 80, 160]);
     }
+    syncOnboardHudViewportOffset();
 }
 
 function clearOnboardTimers() {
@@ -4081,6 +4137,36 @@ function projectCoordOntoJourney(lat, lng) {
     return { bestCumM, offsetM: bestDist };
 }
 
+let onboardHudResizeObserver = null;
+
+function applyOnboardHudViewportOffsetNow() {
+    const hud = document.getElementById('onboard-hud');
+    if (!hud || hud.style.display === 'none') {
+        document.body.classList.remove('onboard-active');
+        document.documentElement.style.removeProperty('--onboard-hud-bottom');
+        return;
+    }
+    document.body.classList.add('onboard-active');
+    const rect = hud.getBoundingClientRect();
+    if (rect && rect.bottom > 0) {
+        document.documentElement.style.setProperty('--onboard-hud-bottom', `${Math.ceil(rect.bottom)}px`);
+    }
+}
+
+function syncOnboardHudViewportOffset() {
+    const hud = document.getElementById('onboard-hud');
+    if (hud && typeof ResizeObserver === 'function' && !onboardHudResizeObserver) {
+        onboardHudResizeObserver = new ResizeObserver(() => {
+            applyOnboardHudViewportOffsetNow();
+        });
+        onboardHudResizeObserver.observe(hud);
+    }
+    applyOnboardHudViewportOffsetNow();
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => applyOnboardHudViewportOffsetNow());
+    }
+}
+
 function setOnboardWaitingGpsHud(message) {
     const nextStopEl = document.getElementById('onboard-next-stop');
     const alightEl = document.getElementById('onboard-alight-info');
@@ -4091,6 +4177,7 @@ function setOnboardWaitingGpsHud(message) {
     if (alightEl) {
         alightEl.textContent = 'Activa el permiso de ubicación para seguir tu viaje en tiempo real';
     }
+    syncOnboardHudViewportOffset();
 }
 
 function startOnboardGpsWatch() {
@@ -4175,6 +4262,7 @@ function startOnboardTrip(optionIdx) {
     if (hud) hud.style.display = 'block';
 
     setOnboardTrackingSource(initialSource);
+    syncOnboardHudViewportOffset();
     if (isMobileViewport()) setMobileSheetState('peek');
 }
 
@@ -4198,6 +4286,7 @@ function setOnboardTrackingSource(source) {
         startOnboardSimulationLoop();
         updateOnboardHudAtDistance(onboardState.currentDistM);
     }
+    syncOnboardHudViewportOffset();
 }
 
 function toggleOnboardPlayPause() {
@@ -4236,6 +4325,7 @@ function stopOnboardTrip({ silent = false } = {}) {
     }
     const hud = document.getElementById('onboard-hud');
     if (hud) hud.style.display = 'none';
+    syncOnboardHudViewportOffset();
     if (!silent && wasActive) {
         showToast('Seguimiento a bordo finalizado');
     }

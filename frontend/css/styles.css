@@ -964,11 +964,13 @@ a { text-decoration: none; }
     right: 20px;
     bottom: 24px;
     width: min(390px, calc(100vw - 40px));
-    background: #0F172A;
-    color: #F8FAFC;
+    background: rgba(255, 255, 255, 0.96);
+    color: var(--text-primary);
     border-radius: var(--radius-md);
-    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.36);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     overflow: hidden;
     z-index: 950;
 }
@@ -978,10 +980,10 @@ a { text-decoration: none; }
     background: var(--primary);
 }
 .onboard-hud-inner {
-    padding: 13px 15px 12px 15px;
+    padding: 12px 14px 11px 14px;
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: 8px;
 }
 .onboard-hud-top {
     display: flex;
@@ -1001,61 +1003,66 @@ a { text-decoration: none; }
     height: 8px;
     border-radius: 50%;
     background: #10B981;
-    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
     flex-shrink: 0;
 }
 .onboard-mode-badge {
     font-size: 0.65rem;
     font-weight: 800;
-    letter-spacing: 0.06em;
-    color: #34D399;
+    letter-spacing: 0.05em;
+    color: #059669;
+    background: #ECFDF5;
+    padding: 2px 7px;
+    border-radius: 9999px;
 }
 .onboard-route-name {
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     font-weight: 700;
-    color: #CBD5E1;
+    color: var(--text-secondary);
 }
 .onboard-next-stop {
     font-family: var(--font-heading);
-    font-size: 0.94rem;
+    font-size: 0.95rem;
     font-weight: 700;
-    color: #FFFFFF;
+    color: var(--text-primary);
     line-height: 1.3;
 }
 .onboard-next-stop.alert-near {
-    color: #FBBF24;
+    color: #D97706;
 }
 .onboard-alight-info {
-    font-size: 0.74rem;
-    color: #94A3B8;
+    font-size: 0.75rem;
+    color: var(--text-muted);
     margin-top: 2px;
 }
 .onboard-close-btn {
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    background: rgba(255, 255, 255, 0.08);
-    color: #F8FAFC;
-    border-radius: 7px;
-    padding: 4px 10px;
-    font-size: 0.72rem;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    border-radius: 8px;
+    padding: 5px 11px;
+    font-size: 0.73rem;
     font-weight: 700;
     cursor: pointer;
     flex-shrink: 0;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 .onboard-close-btn:hover {
-    background: rgba(239, 68, 68, 0.25);
-    border-color: rgba(248, 113, 113, 0.5);
+    background: #FEF2F2;
+    border-color: #FECACA;
+    color: #DC2626;
 }
 .onboard-progress-track {
     width: 100%;
     height: 6px;
     border-radius: 9999px;
-    background: rgba(255, 255, 255, 0.14);
+    background: #E2E8F0;
     overflow: hidden;
 }
 .onboard-progress-fill {
     height: 100%;
     border-radius: 9999px;
-    background: linear-gradient(90deg, #10B981, #38BDF8);
+    background: linear-gradient(90deg, #10B981, #0284C7);
     transition: width 0.25s linear;
 }
 .onboard-controls-row {
@@ -1071,9 +1078,9 @@ a { text-decoration: none; }
     gap: 5px;
 }
 .onboard-pill {
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    background: rgba(255, 255, 255, 0.06);
-    color: #CBD5E1;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
     border-radius: 9999px;
     padding: 3px 10px;
     font-size: 0.7rem;
@@ -1086,9 +1093,9 @@ a { text-decoration: none; }
     color: #ffffff;
 }
 .onboard-ctrl-btn {
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(255, 255, 255, 0.1);
-    color: #F8FAFC;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-primary);
     border-radius: 6px;
     padding: 3px 9px;
     font-size: 0.7rem;
@@ -1096,14 +1103,14 @@ a { text-decoration: none; }
     cursor: pointer;
 }
 .onboard-ctrl-btn:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: #E2E8F0;
 }
 
 @media (max-width: 768px) {
     .onboard-hud {
-        left: 12px;
-        right: 12px;
-        top: 64px;
+        left: 10px;
+        right: 10px;
+        top: 62px;
         bottom: auto;
         width: auto;
     }
@@ -2992,6 +2999,21 @@ body:has(.sidebar.collapsed) .leaflet-top.leaflet-left {
         text-align: center;
     }
     body:not(.admin-body) .toast.show {
+        transform: translateX(-50%) translateY(0);
+    }
+    /* En modo "Voy a bordo", desplazar zoom, ubicación y avisos debajo de la tarjeta para no empalmarse */
+    body.onboard-active:not(.admin-body) .leaflet-top.leaflet-left {
+        top: calc(var(--onboard-hud-bottom, 174px) + 6px) !important;
+    }
+    body.onboard-active:not(.admin-body) .fab-location {
+        top: calc(var(--onboard-hud-bottom, 174px) + 100px) !important;
+    }
+    body.onboard-active:not(.admin-body) .toast {
+        top: auto;
+        bottom: 144px;
+        transform: translateX(-50%) translateY(20px);
+    }
+    body.onboard-active:not(.admin-body) .toast.show {
         transform: translateX(-50%) translateY(0);
     }
 }

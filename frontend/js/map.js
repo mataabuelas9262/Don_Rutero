@@ -375,11 +375,13 @@ function getStopIconConfig(stopName, stopType) {
     return { iconKey: 'parada', iconUrl: 'assets/icons/pin_parada.svg', bgColor: '#475569', category: 'Parada Oficial del Sistema' };
 }
 
+let activeRouteStopsMinIconZoom = 15;
+
 function updateRouteStopsVisibility() {
     if (!mapInstance || activeRouteStopEntries.length === 0) return;
 
     const zoom = mapInstance.getZoom();
-    const useCompactDots = zoom < 15;
+    const useCompactDots = zoom < activeRouteStopsMinIconZoom;
     const minPixelGap = zoom >= 17 ? 0 : (zoom >= 16 ? 24 : (zoom >= 15 ? 36 : 48));
     const keptPoints = [];
 
@@ -433,8 +435,11 @@ function focusRouteStopOnMap(stopId) {
 }
 
 // Dibuja los marcadores de paradas de una ruta evitando amontonamiento según el zoom
-function drawRouteStops(stops, color = '#6366f1') {
+function drawRouteStops(stops, color = '#6366f1', options = {}) {
     if (!mapInstance || !stops || stops.length === 0) return;
+
+    const markEndpoints = options.markEndpoints !== false;
+    activeRouteStopsMinIconZoom = typeof options.minIconZoom === 'number' ? options.minIconZoom : 15;
 
     activeRouteStopEntries.forEach(entry => {
         if (mapInstance.hasLayer(entry.marker)) mapInstance.removeLayer(entry.marker);
@@ -448,9 +453,9 @@ function drawRouteStops(stops, color = '#6366f1') {
         if (!stop || stop.latitude == null || stop.longitude == null) return;
 
         const config = getStopIconConfig(stop.name, stop.type);
-        const markerBg = safeMapColor(color || config.bgColor, '#E63E21');
-        const isEndpoint = index === 0 || index === lastIdx;
-        const endBadge = index === 0 ? 'INICIO' : (index === lastIdx ? 'FIN' : '');
+        const markerBg = safeMapColor(rs.color || color || config.bgColor, '#E63E21');
+        const isEndpoint = markEndpoints && (index === 0 || index === lastIdx);
+        const endBadge = isEndpoint ? (index === 0 ? 'INICIO' : 'FIN') : '';
 
         const compactIcon = L.divIcon({
             className: 'custom-stop-marker',
@@ -469,11 +474,14 @@ function drawRouteStops(stops, color = '#6366f1') {
                      ${renderStopCategorySvg(config.iconKey, 12)}
                    </div>`,
             iconSize: isEndpoint ? [24, 24] : [22, 22],
-            iconAnchor: isEndpoint ? [12, 12] : [11, 11]
+            iconAnchor: [isEndpoint ? 12 : 11, isEndpoint ? 12 : 11]
         });
 
         const endpointNote = endBadge
             ? `<span style="font-size: 0.65rem; background: ${markerBg}; color: white; padding: 2px 6px; border-radius: 9999px; font-weight: 700; margin-left: 6px;">${endBadge}</span>`
+            : '';
+        const orderPrefix = rs.stopOrder != null && Number.isFinite(Number(rs.stopOrder))
+            ? `Parada #${Number(rs.stopOrder)} — `
             : '';
 
         const marker = L.marker([stop.latitude, stop.longitude], {
@@ -485,7 +493,7 @@ function drawRouteStops(stops, color = '#6366f1') {
                     <span style="font-size: 0.7rem; background: rgba(0,0,0,0.06); color: ${safeMapColor(config.bgColor)}; padding: 2px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase;">${escapeMapHtml(config.category)}</span>
                     ${endpointNote}
                 </div>
-                <h4 style="margin: 0 0 4px 0; color: #1f2937; font-weight: 700; font-size: 0.95rem;">Parada #${Number(rs.stopOrder)} — ${escapeMapHtml(stop.name)}</h4>
+                <h4 style="margin: 0 0 4px 0; color: #1f2937; font-weight: 700; font-size: 0.95rem;">${orderPrefix}${escapeMapHtml(stop.name)}</h4>
                 <p style="margin: 0 0 4px 0; color: #475569; font-size: 0.78rem;">${escapeMapHtml(stop.address || 'Mazatlán, Sinaloa')}</p>
                 <p style="margin: 0; color: #64748b; font-size: 0.75rem;">GPS: ${stop.latitude.toFixed(4)}, ${stop.longitude.toFixed(4)}</p>
                 ${typeof openQrModalForStop === 'function' ? `<button type="button" onclick="openQrModalForStop(${Number(stop.id)})" class="popup-qr-btn">Ver QR de paradero</button>` : ''}
