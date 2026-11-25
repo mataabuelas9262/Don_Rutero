@@ -3087,19 +3087,34 @@ async function initGoogleAuthIntegration({ forceConfig = false } = {}) {
         }
         const cfg = window._authConfigCache || {};
         const hasGoogle = Boolean(cfg.googleEnabled && cfg.googleClientId);
+        const forceClassicPwd = new URLSearchParams(window.location.search).get('passwordLogin') === '1';
+        const googleOnlyMode = hasGoogle && !forceClassicPwd;
+
         const loginSec = document.getElementById('google-login-section');
+        const loginDivider = loginSec ? loginSec.querySelector('.auth-divider') : null;
+        const loginFormEl = document.getElementById('login-form');
+        const loginFooter = document.querySelector('#login-modal .form-footer');
+        const loginSubtitle = document.querySelector('#login-modal .auth-subtitle');
+
         const regSec = document.getElementById('google-register-section');
         const regDivider = document.getElementById('google-register-divider');
         const regForm = document.getElementById('register-form');
         const regGoogleOnlyNote = document.getElementById('register-google-only-note');
 
         if (loginSec) loginSec.style.display = hasGoogle ? 'flex' : 'none';
-        if (regSec) regSec.style.display = hasGoogle ? 'flex' : 'none';
+        if (loginDivider) loginDivider.style.display = googleOnlyMode ? 'none' : 'flex';
+        if (loginFormEl) loginFormEl.style.display = googleOnlyMode ? 'none' : 'flex';
+        if (loginFooter) loginFooter.style.display = googleOnlyMode ? 'none' : 'block';
+        if (loginSubtitle) {
+            loginSubtitle.textContent = googleOnlyMode
+                ? 'Accede rápido y seguro con tu cuenta de Google'
+                : 'Bienvenido de nuevo a Don Rutero';
+        }
 
-        const googleOnlyRegister = hasGoogle && cfg.requireEmailVerification !== false && cfg.smtpConfigured === false;
-        if (regDivider) regDivider.style.display = googleOnlyRegister ? 'none' : 'flex';
-        if (regForm) regForm.style.display = googleOnlyRegister ? 'none' : 'flex';
-        if (regGoogleOnlyNote) regGoogleOnlyNote.style.display = googleOnlyRegister ? 'block' : 'none';
+        if (regSec) regSec.style.display = hasGoogle ? 'flex' : 'none';
+        if (regDivider) regDivider.style.display = googleOnlyMode ? 'none' : 'flex';
+        if (regForm) regForm.style.display = googleOnlyMode ? 'none' : 'flex';
+        if (regGoogleOnlyNote) regGoogleOnlyNote.style.display = googleOnlyMode ? 'block' : 'none';
 
         if (hasGoogle) {
             renderGoogleSignInButtons(cfg.googleClientId);
