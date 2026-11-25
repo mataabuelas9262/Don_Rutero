@@ -3,6 +3,7 @@ package com.rutabus.controller;
 import com.rutabus.entity.User;
 import com.rutabus.repository.UserRepository;
 import com.rutabus.security.JwtTokenProvider;
+import com.rutabus.service.EmailService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,36 +16,29 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.HashMap;
-import java.util.Hashtable;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
-import javax.naming.Context;
-import javax.naming.NameNotFoundException;
-import javax.naming.NamingException;
-import javax.naming.directory.Attribute;
-import javax.naming.directory.Attributes;
-import javax.naming.directory.DirContext;
-import javax.naming.directory.InitialDirContext;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
 
     private static final Pattern USERNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_.-]{3,30}$");
-    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$");
     private static final long CODE_TTL_MS = 10 * 60 * 1000L; // 10 minutos
     private static final int MAX_CODE_ATTEMPTS = 5;
     private static final long RATE_WINDOW_MS = 60 * 1000L; // 1 minuto
     private static final int MAX_AUTH_REQUESTS_PER_MIN = 15;
-    private static final long REGISTER_SHORT_WINDOW_MS = 10 * 60 * 1000L; // 10 minutos
+    private static final long REGISTER_SHORT_WINDOW_MS = 10 * 60 * 1000L;
     private static final int MAX_REGISTER_PER_10_MIN = 3;
-    private static final long REGISTER_DAY_WINDOW_MS = 24 * 60 * 60 * 1000L; // 24 horas
+    private static final long REGISTER_DAY_WINDOW_MS = 24 * 60 * 60 * 1000L;
     private static final int MAX_REGISTER_PER_DAY = 6;
-    private static final long MX_CACHE_TTL_MS = 60 * 60 * 1000L; // 1 hora
     private static final Set<String> BLOCKED_EMAIL_DOMAINS = Set.of(
             "example.com", "example.org", "example.net", "test.com", "localhost",
             "mailinator.com", "guerrillamail.com", "yopmail.com", "tempmail.com",
@@ -56,19 +50,16 @@ public class AuthController {
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, VerificationEntry> pendingCodes = new ConcurrentHashMap<>();
+    private final Map<String, VerificationEntry> pendingResetCodes = new ConcurrentHashMap<>();
     private final Map<String, RateLimitEntry> rateLimits = new ConcurrentHashMap<>();
     private final Map<String, RateLimitEntry> registerShortLimits = new ConcurrentHashMap<>();
     private final Map<String, RateLimitEntry> registerDayLimits = new ConcurrentHashMap<>();
-    private final Map<String, long[]> mxCache = new ConcurrentHashMap<>();
 
     @Value("${app.auth.expose-demo-codes:false}")
     private boolean exposeDemoCodes;
 
     @Value("${app.auth.require-email-verification:true}")
     private boolean requireEmailVerification;
-
-    @Value("${app.auth.verify-email-mx:true}")
-    private boolean verifyEmailMx;
 
     @Autowired
     private AuthenticationManager authenticationManager;
@@ -81,6 +72,9 @@ public class AuthController {
 
     @Autowired
     private JwtTokenProvider tokenProvider;
+
+    @Autowired
+    private EmailService emailService;
 
     private static class VerificationEntry {
         final String code;
@@ -102,88 +96,108 @@ public class AuthController {
         }
     }
 
-    private boolean checkWindowLimit(Map<String, RateLimitEntry> store, String key, long windowMs, int maxAllowed) {
+    private boolean isKeyRateLimitedInStore(Map<String, RateLimitEntry> store, String key, long windowMs, int maxRequests, boolean increment) {
         long now = System.currentTimeMillis();
         RateLimitEntry entry = store.compute(key, (k, existing) -> {
             if (existing == null || now - existing.windowStart >= windowMs) {
                 RateLimitEntry fresh = new RateLimitEntry(now);
-                fresh.count = 1;
+                fresh.count = increment ? 1 : 0;
                 return fresh;
             }
-            existing.count++;
+            if (increment) {
+                existing.count++;
+            }
             return existing;
         });
         if (store.size() > 5000) {
             store.entrySet().removeIf(e -> now - e.getValue().windowStart >= windowMs);
         }
-        return entry.count > maxAllowed;
+        return entry.count > maxRequests;
+    }
+
+    private boolean isKeyRateLimited(String key, long windowMs, int maxRequests, boolean increment) {
+        return isKeyRateLimitedInStore(rateLimits, key, windowMs, maxRequests, increment);
     }
 
     private boolean isRateLimited(HttpServletRequest req, String bucket) {
         String ip = req != null ? req.getRemoteAddr() : "unknown";
-        return checkWindowLimit(rateLimits, bucket + ":" + ip, RATE_WINDOW_MS, MAX_AUTH_REQUESTS_PER_MIN);
+        return isKeyRateLimited(bucket + ":" + ip, RATE_WINDOW_MS, MAX_AUTH_REQUESTS_PER_MIN, true);
     }
 
     private boolean isRegisterRateLimited(HttpServletRequest req) {
         String ip = req != null ? req.getRemoteAddr() : "unknown";
-        return checkWindowLimit(registerShortLimits, ip, REGISTER_SHORT_WINDOW_MS, MAX_REGISTER_PER_10_MIN)
-                || checkWindowLimit(registerDayLimits, ip, REGISTER_DAY_WINDOW_MS, MAX_REGISTER_PER_DAY);
+        return isKeyRateLimitedInStore(registerShortLimits, ip, REGISTER_SHORT_WINDOW_MS, MAX_REGISTER_PER_10_MIN, true)
+                || isKeyRateLimitedInStore(registerDayLimits, ip, REGISTER_DAY_WINDOW_MS, MAX_REGISTER_PER_DAY, true);
     }
 
-    private boolean isEmailDomainAllowed(String emailStr) {
+    private boolean isDisallowedTestDomain(String emailStr) {
         int atIdx = emailStr.lastIndexOf('@');
-        if (atIdx <= 0 || atIdx >= emailStr.length() - 1) return false;
+        if (atIdx <= 0 || atIdx >= emailStr.length() - 1) return true;
         String domain = emailStr.substring(atIdx + 1).trim().toLowerCase();
         if (domain.isEmpty() || !domain.contains(".") || BLOCKED_EMAIL_DOMAINS.contains(domain)) {
-            return false;
+            return true;
         }
         int lastDot = domain.lastIndexOf('.');
         String tld = domain.substring(lastDot + 1);
-        if (tld.length() < 2 || BLOCKED_TLDS.contains(tld)) {
-            return false;
-        }
-        if (!verifyEmailMx) {
-            return true;
-        }
-        long now = System.currentTimeMillis();
-        long[] cached = mxCache.get(domain);
-        if (cached != null && now - cached[0] < MX_CACHE_TTL_MS) {
-            return cached[1] == 1L;
-        }
-        boolean valid = lookupDomainHasMx(domain);
-        if (mxCache.size() > 3000) {
-            mxCache.entrySet().removeIf(e -> now - e.getValue()[0] >= MX_CACHE_TTL_MS);
-        }
-        mxCache.put(domain, new long[]{now, valid ? 1L : 0L});
-        return valid;
+        return tld.length() < 2 || BLOCKED_TLDS.contains(tld);
     }
 
-    private boolean lookupDomainHasMx(String domain) {
-        try {
-            Hashtable<String, String> env = new Hashtable<>();
-            env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.dns.DnsContextFactory");
-            env.put("com.sun.jndi.dns.timeout.initial", "2500");
-            env.put("com.sun.jndi.dns.timeout.retries", "1");
-            DirContext ctx = new InitialDirContext(env);
-            try {
-                Attributes attrs = ctx.getAttributes(domain, new String[]{"MX"});
-                Attribute mx = attrs != null ? attrs.get("MX") : null;
-                if (mx == null || mx.size() == 0) return false;
-                for (int i = 0; i < mx.size(); i++) {
-                    String rec = String.valueOf(mx.get(i)).trim();
-                    if (!rec.endsWith(" .") && !rec.equals(".")) {
-                        return true;
-                    }
-                }
-                return false;
-            } finally {
-                ctx.close();
+    private String validatePasswordStrength(String password) {
+        if (password == null || password.length() < 8 || password.length() > 128) {
+            return "La contraseña debe tener entre 8 y 128 caracteres.";
+        }
+        boolean hasUpper = false;
+        boolean hasLower = false;
+        boolean hasDigit = false;
+        boolean hasSymbol = false;
+        for (int i = 0; i < password.length(); i++) {
+            char ch = password.charAt(i);
+            if (Character.isUpperCase(ch)) hasUpper = true;
+            else if (Character.isLowerCase(ch)) hasLower = true;
+            else if (Character.isDigit(ch)) hasDigit = true;
+            else if (!Character.isWhitespace(ch)) hasSymbol = true;
+        }
+        if (!hasUpper || !hasLower || !hasDigit || !hasSymbol) {
+            return "La contraseña debe incluir al menos 1 mayúscula, 1 minúscula, 1 número y 1 símbolo.";
+        }
+        return null;
+    }
+
+    private ResponseEntity<?> validateVerificationEntry(Map<String, VerificationEntry> store, String emailKey, String codeInput, boolean consumeOnSuccess) {
+        VerificationEntry pending = store.get(emailKey);
+        long now = System.currentTimeMillis();
+        if (pending == null || now > pending.expiresAt) {
+            store.remove(emailKey);
+            return ResponseEntity.badRequest().body(Map.of("error", "El código de verificación expiró o no ha sido solicitado."));
+        }
+        synchronized (pending) {
+            if (now > pending.expiresAt) {
+                store.remove(emailKey, pending);
+                return ResponseEntity.badRequest().body(Map.of("error", "El código de verificación expiró o no ha sido solicitado."));
             }
-        } catch (NameNotFoundException e) {
-            return false;
-        } catch (NamingException e) {
-            // Si el DNS no está disponible temporalmente, evita falsos negativos en registros reales
-            return e.getMessage() == null || !e.getMessage().toLowerCase().contains("name not found");
+            pending.attempts++;
+            if (pending.attempts > MAX_CODE_ATTEMPTS) {
+                store.remove(emailKey, pending);
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                        .body(Map.of("error", "Demasiados intentos fallidos de código. Solicita uno nuevo."));
+            }
+            byte[] expectedBytes = pending.code.getBytes(StandardCharsets.UTF_8);
+            byte[] providedBytes = (codeInput != null ? codeInput : "").getBytes(StandardCharsets.UTF_8);
+            if (!MessageDigest.isEqual(expectedBytes, providedBytes)) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Código de verificación incorrecto."));
+            }
+            if (consumeOnSuccess) {
+                store.remove(emailKey, pending);
+            }
+        }
+        return null;
+    }
+
+    private void storeVerificationCode(Map<String, VerificationEntry> store, String email, String code) {
+        store.put(email, new VerificationEntry(code, System.currentTimeMillis() + CODE_TTL_MS));
+        if (store.size() > 5000) {
+            long now = System.currentTimeMillis();
+            store.entrySet().removeIf(e -> now > e.getValue().expiresAt);
         }
     }
 
@@ -201,34 +215,24 @@ public class AuthController {
 
         if (!USERNAME_PATTERN.matcher(username).matches()) {
             return ResponseEntity.badRequest().body(Map.of(
-                    "error", "El usuario debe tener entre 3 y 30 caracteres (solo letras, números, ., _ o -)."));
+                    "error", "El usuario debe tener entre 3 y 30 caracteres (solo letras, números, . _ o -, sin espacios ni acentos)."));
         }
         if (emailStr.isEmpty() || emailStr.length() > 100 || !EMAIL_PATTERN.matcher(emailStr).matches()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Ingresa un correo electrónico válido."));
         }
-        if (!isEmailDomainAllowed(emailStr)) {
+        if (isDisallowedTestDomain(emailStr) || !emailService.hasValidMailDomain(emailStr)) {
             return ResponseEntity.badRequest().body(Map.of(
-                    "error", "El dominio del correo no es válido o no recibe correos. Revisa cómo está escrito."));
+                    "error", "El dominio de ese correo no existe o no recibe mensajes. Revisa que esté bien escrito."));
         }
-        if (password.length() < 8 || password.length() > 128) {
-            return ResponseEntity.badRequest().body(Map.of("error", "La contraseña debe tener entre 8 y 128 caracteres."));
+        String pwdError = validatePasswordStrength(password);
+        if (pwdError != null) {
+            return ResponseEntity.badRequest().body(Map.of("error", pwdError));
         }
 
         if (requireEmailVerification) {
-            VerificationEntry pending = pendingCodes.get(emailStr);
-            long now = System.currentTimeMillis();
-            if (pending == null || now > pending.expiresAt) {
-                pendingCodes.remove(emailStr);
-                return ResponseEntity.badRequest().body(Map.of("error", "El código de verificación expiró o no ha sido solicitado."));
-            }
-            pending.attempts++;
-            if (pending.attempts > MAX_CODE_ATTEMPTS) {
-                pendingCodes.remove(emailStr);
-                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                        .body(Map.of("error", "Demasiados intentos fallidos de código. Solicita uno nuevo."));
-            }
-            if (!pending.code.equals(codeInput)) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Código de verificación incorrecto."));
+            ResponseEntity<?> codeErr = validateVerificationEntry(pendingCodes, emailStr, codeInput, false);
+            if (codeErr != null) {
+                return codeErr;
             }
         }
 
@@ -256,7 +260,10 @@ public class AuthController {
 
     @GetMapping("/config")
     public ResponseEntity<?> getAuthConfig() {
-        return ResponseEntity.ok(Map.of("requireEmailVerification", requireEmailVerification));
+        return ResponseEntity.ok(Map.of(
+                "requireEmailVerification", requireEmailVerification,
+                "smtpConfigured", emailService.isSmtpConfigured()
+        ));
     }
 
     @PostMapping("/send-verification")
@@ -271,8 +278,12 @@ public class AuthController {
         if (email.isEmpty() || email.length() > 100 || !EMAIL_PATTERN.matcher(email).matches()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Por favor ingresa un correo electrónico válido."));
         }
+        if (isDisallowedTestDomain(email) || !emailService.hasValidMailDomain(email)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "El dominio de ese correo no existe o no puede recibir mensajes. Verifica que no tenga errores (ej. @gmail.com o @upsin.edu.mx)."));
+        }
         if (userRepository.existsByEmail(email)) {
-            return ResponseEntity.badRequest().body(Map.of("error", "No fue posible procesar el registro con ese correo."));
+            return ResponseEntity.badRequest().body(Map.of("error", "Ya existe una cuenta registrada con ese correo."));
         }
 
         if (!requireEmailVerification) {
@@ -283,15 +294,23 @@ public class AuthController {
         }
 
         String code = String.valueOf(secureRandom.nextInt(900000) + 100000);
-        pendingCodes.put(email, new VerificationEntry(code, System.currentTimeMillis() + CODE_TTL_MS));
-        if (pendingCodes.size() > 5000) {
-            long now = System.currentTimeMillis();
-            pendingCodes.entrySet().removeIf(e -> now > e.getValue().expiresAt);
+        storeVerificationCode(pendingCodes, email, code);
+
+        boolean sentBySmtp;
+        try {
+            sentBySmtp = emailService.sendVerificationCodeEmail(email, code);
+        } catch (IllegalStateException ex) {
+            pendingCodes.remove(email);
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", ex.getMessage()));
         }
 
         Map<String, Object> body = new HashMap<>();
-        body.put("message", "Código de verificación generado.");
-        if (exposeDemoCodes) {
+        body.put("message", sentBySmtp
+                ? "Código de verificación enviado a tu correo."
+                : "Código de verificación generado en modo local.");
+        body.put("smtpSent", sentBySmtp);
+        if (!sentBySmtp && exposeDemoCodes) {
             body.put("code", code);
         }
         return ResponseEntity.ok(body);
@@ -310,10 +329,68 @@ public class AuthController {
             return ResponseEntity.badRequest().body(Map.of("error", "Por favor ingresa un correo electrónico válido."));
         }
 
-        // Respuesta uniforme sin enumerar si la cuenta existe
-        return ResponseEntity.ok(Map.of(
-                "message", "Si el correo está registrado en el sistema, recibirás instrucciones para recuperar tu acceso."
-        ));
+        User user = userRepository.findByEmail(email).orElse(null);
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "No encontramos ninguna cuenta registrada con ese correo en Don Rutero."));
+        }
+
+        String code = String.valueOf(secureRandom.nextInt(900000) + 100000);
+        storeVerificationCode(pendingResetCodes, email, code);
+        boolean sentBySmtp;
+        try {
+            sentBySmtp = emailService.sendPasswordResetEmail(email, code);
+        } catch (IllegalStateException ex) {
+            pendingResetCodes.remove(email);
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", ex.getMessage()));
+        }
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("message", sentBySmtp
+                ? "Enviamos un código de 6 dígitos a tu correo para restablecer tu contraseña."
+                : "Código de recuperación generado en modo local.");
+        body.put("smtpSent", sentBySmtp);
+        if (!sentBySmtp && exposeDemoCodes) {
+            body.put("code", code);
+        }
+        return ResponseEntity.ok(body);
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<?> resetPassword(@RequestBody Map<String, String> request, HttpServletRequest httpReq) {
+        if (isRateLimited(httpReq, "reset-password")) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Demasiados intentos. Espera un minuto."));
+        }
+
+        String rawEmail = request != null ? request.get("email") : null;
+        String email = rawEmail != null ? rawEmail.trim().toLowerCase() : "";
+        String codeInput = request != null && request.get("code") != null ? request.get("code").trim() : "";
+        String newPassword = request != null ? request.get("newPassword") : null;
+
+        if (email.isEmpty() || email.length() > 100 || !EMAIL_PATTERN.matcher(email).matches()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Correo electrónico inválido."));
+        }
+        String pwdError = validatePasswordStrength(newPassword);
+        if (pwdError != null) {
+            return ResponseEntity.badRequest().body(Map.of("error", pwdError));
+        }
+
+        ResponseEntity<?> codeErr = validateVerificationEntry(pendingResetCodes, email, codeInput, true);
+        if (codeErr != null) {
+            return codeErr;
+        }
+
+        User user = userRepository.findByEmail(email).orElse(null);
+        if (user == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "No se encontró la cuenta asociada a ese correo."));
+        }
+
+        user.setPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+        tokenProvider.invalidateUserTokens(user.getUsername());
+        return ResponseEntity.ok(Map.of("message", "Contraseña restablecida correctamente. Ya puedes iniciar sesión."));
     }
 
     @PostMapping("/login")
@@ -323,21 +400,32 @@ public class AuthController {
                     .body(Map.of("error", "Demasiados intentos de inicio de sesión. Espera un minuto."));
         }
 
-        String username = loginRequest != null && loginRequest.getUsername() != null ? loginRequest.getUsername().trim() : "";
+        String loginInput = loginRequest != null && loginRequest.getUsername() != null ? loginRequest.getUsername().trim() : "";
         String password = loginRequest != null && loginRequest.getPassword() != null ? loginRequest.getPassword() : "";
-        if (username.isEmpty() || password.isEmpty()) {
+        if (loginInput.isEmpty() || password.isEmpty()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", "Usuario o contraseña incorrectos."));
         }
 
+        String accountKey = "login-fail:" + loginInput.toLowerCase();
+        if (isKeyRateLimited(accountKey, 5 * 60_000L, 10, false)) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Demasiados intentos fallidos en esta cuenta. Espera unos minutos."));
+        }
+
         try {
             Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(username, password)
+                    new UsernamePasswordAuthenticationToken(loginInput, password)
             );
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
+            rateLimits.remove(accountKey);
 
-            User user = userRepository.findByUsername(username).orElseThrow();
+            User user = userRepository.findByUsername(authentication.getName()).orElseThrow();
+            rateLimits.remove("login-fail:" + user.getUsername().toLowerCase());
+            if (user.getEmail() != null) {
+                rateLimits.remove("login-fail:" + user.getEmail().toLowerCase());
+            }
             String jwt = tokenProvider.generateToken(user.getUsername(), user.getRole());
 
             Map<String, Object> response = new HashMap<>();
@@ -347,6 +435,7 @@ public class AuthController {
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
+            isKeyRateLimited(accountKey, 5 * 60_000L, 10, true);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", "Usuario o contraseña incorrectos."));
         }
@@ -362,6 +451,9 @@ public class AuthController {
         try {
             String username = tokenProvider.getUsernameFromToken(token);
             User user = userRepository.findByUsername(username).orElseThrow();
+            if (tokenProvider.isTokenRevoked(token, user.getUsername())) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Sesión revocada. Inicia sesión nuevamente."));
+            }
 
             Map<String, Object> response = new HashMap<>();
             response.put("username", user.getUsername());
@@ -387,9 +479,12 @@ public class AuthController {
 
         String currentPassword = request != null ? request.get("currentPassword") : null;
         String newPassword = request != null ? request.get("newPassword") : null;
-        if (currentPassword == null || currentPassword.isEmpty() || newPassword == null || newPassword.length() < 8 || newPassword.length() > 128) {
-            return ResponseEntity.badRequest().body(Map.of(
-                    "error", "Ingresa tu contraseña actual y una nueva contraseña de 8 a 128 caracteres."));
+        if (currentPassword == null || currentPassword.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Ingresa tu contraseña actual."));
+        }
+        String pwdError = validatePasswordStrength(newPassword);
+        if (pwdError != null) {
+            return ResponseEntity.badRequest().body(Map.of("error", pwdError));
         }
 
         User user = userRepository.findByUsername(auth.getName()).orElse(null);
@@ -402,6 +497,7 @@ public class AuthController {
 
         user.setPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
+        tokenProvider.invalidateUserTokens(user.getUsername());
         return ResponseEntity.ok(Map.of("message", "Contraseña actualizada correctamente."));
     }
 

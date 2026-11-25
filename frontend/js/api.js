@@ -99,9 +99,22 @@ const Api = {
         });
         if (!response.ok) {
             const err = await response.json();
-            throw new Error(err.error || 'No existe ninguna cuenta con este correo');
+            throw new Error(err.error || 'No se pudo procesar la recuperación');
         }
         return await response.json();
+    },
+
+    resetPassword: async (email, code, newPassword) => {
+        const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, code, newPassword })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'No se pudo restablecer la contraseña');
+        }
+        return data;
     },
 
     verifyToken: async () => {

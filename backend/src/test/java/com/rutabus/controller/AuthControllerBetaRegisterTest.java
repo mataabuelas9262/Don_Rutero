@@ -43,7 +43,7 @@ class AuthControllerBetaRegisterTest {
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "username", "bot_example_01",
                                 "email", "prueba_carga_001@example.com",
-                                "password", "ClaveBeta123"
+                                "password", "ClaveBeta123!"
                         ))))
                 .andExpect(status().isBadRequest());
 
@@ -53,7 +53,7 @@ class AuthControllerBetaRegisterTest {
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "username", "bot_typo_01",
                                 "email", "ndkej.dksne@upsin.edu.mxx",
-                                "password", "ClaveBeta123"
+                                "password", "ClaveBeta123!"
                         ))))
                 .andExpect(status().isBadRequest());
 
@@ -66,7 +66,7 @@ class AuthControllerBetaRegisterTest {
                             .content(objectMapper.writeValueAsString(Map.of(
                                     "username", "pasajero_beta_" + i,
                                     "email", "pasajero_beta_" + i + "@gmail.com",
-                                    "password", "ClaveBeta123"
+                                    "password", "ClaveBeta123!"
                             ))))
                     .andExpect(status().isCreated());
         }
@@ -77,7 +77,7 @@ class AuthControllerBetaRegisterTest {
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "username", "pasajero_beta_4",
                                 "email", "pasajero_beta_4@gmail.com",
-                                "password", "ClaveBeta123"
+                                "password", "ClaveBeta123!"
                         ))))
                 .andExpect(status().isTooManyRequests());
     }

@@ -17,6 +17,7 @@ import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 @Component
@@ -29,6 +30,7 @@ public class JwtTokenProvider {
     private long jwtExpirationInMs;
 
     private Key signingKey;
+    private final Map<String, Long> invalidatedBeforeMs = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void initKey() {
@@ -61,6 +63,7 @@ public class JwtTokenProvider {
     private String createToken(Map<String, Object> claims, String subject) {
         Date now = new Date();
         Date expiryDate = new Date(now.getTime() + jwtExpirationInMs);
+        claims.put("iatMs", now.getTime());
 
         return Jwts.builder()
                 .setClaims(claims)
@@ -102,8 +105,27 @@ public class JwtTokenProvider {
         return expiration.before(new Date());
     }
 
+    public void invalidateUserTokens(String username) {
+        if (StringUtils.hasText(username)) {
+            invalidatedBeforeMs.put(username, System.currentTimeMillis());
+        }
+    }
+
+    public boolean isTokenRevoked(String token, String username) {
+        Long cutoff = username != null ? invalidatedBeforeMs.get(username) : null;
+        if (cutoff == null) {
+            return false;
+        }
+        Claims claims = getAllClaimsFromToken(token);
+        Number iatMsNum = claims.get("iatMs", Number.class);
+        long issuedMs = iatMsNum != null
+                ? iatMsNum.longValue()
+                : (claims.getIssuedAt() != null ? claims.getIssuedAt().getTime() : 0L);
+        return issuedMs < cutoff;
+    }
+
     public Boolean validateToken(String token, UserDetails userDetails) {
         final String username = getUsernameFromToken(token);
-        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
+        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token) && !isTokenRevoked(token, username));
     }
 }

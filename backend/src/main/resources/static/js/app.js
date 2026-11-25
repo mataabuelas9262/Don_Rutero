@@ -3202,6 +3202,197 @@ function setupEventListeners() {
         });
     }
 
+    const STRONG_PWD_MSG = 'La contraseña debe tener mínimo 8 caracteres, 1 mayúscula, 1 minúscula, 1 número y 1 símbolo.';
+
+    function validateStrongPasswordClient(pwd) {
+        const s = String(pwd || '');
+        const checks = {
+            len: s.length >= 8 && s.length <= 128,
+            upper: /[A-ZÁÉÍÓÚÜÑ]/.test(s),
+            lower: /[a-záéíóúüñ]/.test(s),
+            digit: /\d/.test(s),
+            symbol: /[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s]/.test(s)
+        };
+        return {
+            ok: checks.len && checks.upper && checks.lower && checks.digit && checks.symbol,
+            checks
+        };
+    }
+
+    function renderPasswordChecklist(containerEl, pwd) {
+        if (!containerEl) return;
+        const { checks } = validateStrongPasswordClient(pwd);
+        const rules = [
+            { key: 'len', label: '8+ caracteres' },
+            { key: 'upper', label: '1 mayúscula' },
+            { key: 'lower', label: '1 minúscula' },
+            { key: 'digit', label: '1 número' },
+            { key: 'symbol', label: '1 símbolo (!@#)' }
+        ];
+        containerEl.innerHTML = '';
+        rules.forEach((rule) => {
+            const chip = document.createElement('span');
+            chip.className = `pwd-rule${checks[rule.key] ? ' ok' : ''}`;
+            chip.textContent = `${checks[rule.key] ? '✓ ' : ''}${rule.label}`;
+            containerEl.appendChild(chip);
+        });
+    }
+
+    function bindPasswordChecklist(inputEl, containerEl) {
+        if (!inputEl || !containerEl) return;
+        renderPasswordChecklist(containerEl, inputEl.value);
+        inputEl.addEventListener('input', () => renderPasswordChecklist(containerEl, inputEl.value));
+    }
+
+    function showAuthBanner(bannerEl, textEl, message, displayMode = 'flex') {
+        if (textEl) textEl.textContent = message;
+        if (bannerEl) {
+            bannerEl.style.display = displayMode;
+            if (typeof bannerEl.scrollIntoView === 'function') {
+                bannerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }
+
+    async function withButtonLoading(btn, loadingText, asyncFn) {
+        if (!btn) {
+            return await asyncFn();
+        }
+        if (btn.dataset.loading === '1') return;
+        const originalNodes = Array.from(btn.childNodes);
+        const wasDisabled = btn.disabled;
+        btn.dataset.loading = '1';
+        btn.disabled = true;
+        btn.classList.add('is-loading');
+
+        const spinner = document.createElement('span');
+        spinner.className = 'btn-spinner';
+        spinner.setAttribute('aria-hidden', 'true');
+        const label = document.createElement('span');
+        label.textContent = loadingText || 'Cargando...';
+        btn.innerHTML = '';
+        btn.appendChild(spinner);
+        btn.appendChild(label);
+
+        try {
+            return await asyncFn();
+        } finally {
+            delete btn.dataset.loading;
+            btn.disabled = wasDisabled;
+            btn.classList.remove('is-loading');
+            btn.innerHTML = '';
+            originalNodes.forEach((n) => btn.appendChild(n));
+        }
+    }
+
+    async function handleResendWithCooldown(linkEl, asyncFn, cooldownSec = 20) {
+        if (!linkEl || linkEl.dataset.busy === '1') return;
+        const originalText = linkEl.dataset.origText || linkEl.textContent;
+        linkEl.dataset.origText = originalText;
+        linkEl.dataset.busy = '1';
+        linkEl.classList.add('auth-resend-disabled');
+        linkEl.textContent = 'Enviando nuevo código...';
+
+        let ok = false;
+        try {
+            await asyncFn();
+            ok = true;
+        } finally {
+            if (!ok) {
+                delete linkEl.dataset.busy;
+                linkEl.classList.remove('auth-resend-disabled');
+                linkEl.textContent = originalText;
+            }
+        }
+
+        let remaining = cooldownSec;
+        linkEl.textContent = `Reenviar disponible en ${remaining}s`;
+        const timer = setInterval(() => {
+            remaining -= 1;
+            if (!document.body.contains(linkEl) || remaining <= 0) {
+                clearInterval(timer);
+                delete linkEl.dataset.busy;
+                linkEl.classList.remove('auth-resend-disabled');
+                linkEl.textContent = originalText;
+                return;
+            }
+            linkEl.textContent = `Reenviar disponible en ${remaining}s`;
+        }, 1000);
+    }
+
+    const COMMON_EMAIL_DOMAIN_TYPOS = {
+        'gmial.com': 'gmail.com',
+        'gmal.com': 'gmail.com',
+        'gamil.com': 'gmail.com',
+        'gnail.com': 'gmail.com',
+        'gmail.con': 'gmail.com',
+        'gmail.comm': 'gmail.com',
+        'gmail.com.mx': 'gmail.com',
+        'gmail.mx': 'gmail.com',
+        'hotmal.com': 'hotmail.com',
+        'hotnail.com': 'hotmail.com',
+        'hotmail.con': 'hotmail.com',
+        'outlok.com': 'outlook.com',
+        'outloo.com': 'outlook.com',
+        'outlook.con': 'outlook.com',
+        'yaho.com': 'yahoo.com',
+        'yahoo.con': 'yahoo.com',
+        'iclod.com': 'icloud.com',
+        'icloud.con': 'icloud.com',
+        'upsin.edu': 'upsin.edu.mx',
+        'upsin.mx': 'upsin.edu.mx'
+    };
+
+    function detectEmailTypo(rawEmail) {
+        const email = String(rawEmail || '').trim().toLowerCase();
+        const atIdx = email.lastIndexOf('@');
+        if (atIdx < 1 || atIdx === email.length - 1) return null;
+        const local = email.slice(0, atIdx);
+        const domain = email.slice(atIdx + 1);
+        if (COMMON_EMAIL_DOMAIN_TYPOS[domain]) {
+            return `${local}@${COMMON_EMAIL_DOMAIN_TYPOS[domain]}`;
+        }
+        if (domain.endsWith('.con')) {
+            return `${local}@${domain.slice(0, -4)}.com`;
+        }
+        if (domain.endsWith('.comm')) {
+            return `${local}@${domain.slice(0, -5)}.com`;
+        }
+        return null;
+    }
+
+    function bindEmailTypoHint(inputEl, hintEl, confirmEl = null) {
+        if (!inputEl || !hintEl) return;
+        const refresh = () => {
+            const suggested = detectEmailTypo(inputEl.value);
+            if (!suggested) {
+                hintEl.style.display = 'none';
+                hintEl.innerHTML = '';
+                return;
+            }
+            hintEl.innerHTML = '';
+            const span = document.createElement('span');
+            span.textContent = `¿Quisiste decir ${suggested}?`;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'auth-typo-btn';
+            btn.textContent = 'Corregir';
+            btn.addEventListener('click', () => {
+                inputEl.value = suggested;
+                if (confirmEl && confirmEl.value.trim()) {
+                    confirmEl.value = suggested;
+                }
+                hintEl.style.display = 'none';
+                inputEl.focus();
+            });
+            hintEl.appendChild(span);
+            hintEl.appendChild(btn);
+            hintEl.style.display = 'flex';
+        };
+        inputEl.addEventListener('input', refresh);
+        inputEl.addEventListener('blur', refresh);
+    }
+
     // User badge (account modal & logout)
     const userBadge = document.getElementById('user-badge');
     const accountModal = document.getElementById('account-modal');
@@ -3210,6 +3401,9 @@ function setupEventListeners() {
     const btnToggleChangePwd = document.getElementById('btn-toggle-change-pwd');
     const changePwdForm = document.getElementById('change-password-form');
     const changePwdErr = document.getElementById('change-pwd-error');
+    const newPwdInput = document.getElementById('new-password-input');
+    const changePwdRules = document.getElementById('change-pwd-rules');
+    bindPasswordChecklist(newPwdInput, changePwdRules);
     
     function resetChangePasswordForm() {
         if (changePwdForm) {
@@ -3220,6 +3414,7 @@ function setupEventListeners() {
             changePwdErr.textContent = '';
             changePwdErr.style.display = 'none';
         }
+        renderPasswordChecklist(changePwdRules, '');
     }
 
     if (userBadge && accountModal) {
@@ -3243,6 +3438,7 @@ function setupEventListeners() {
             const isOpen = changePwdForm.style.display === 'flex';
             changePwdForm.style.display = isOpen ? 'none' : 'flex';
             if (changePwdErr) changePwdErr.style.display = 'none';
+            renderPasswordChecklist(changePwdRules, newPwdInput ? newPwdInput.value : '');
         });
     }
     if (changePwdForm) {
@@ -3250,28 +3446,28 @@ function setupEventListeners() {
             e.preventDefault();
             if (changePwdErr) changePwdErr.style.display = 'none';
             const curr = document.getElementById('current-password-input').value;
-            const next = document.getElementById('new-password-input').value;
+            const next = newPwdInput.value;
             const conf = document.getElementById('confirm-new-password-input').value;
 
-            if (next.length < 8) {
-                changePwdErr.textContent = 'La nueva contraseña debe tener al menos 8 caracteres.';
-                changePwdErr.style.display = 'block';
+            if (!validateStrongPasswordClient(next).ok) {
+                showAuthBanner(changePwdErr, changePwdErr, STRONG_PWD_MSG, 'block');
                 return;
             }
             if (next !== conf) {
-                changePwdErr.textContent = 'Las nuevas contraseñas no coinciden.';
-                changePwdErr.style.display = 'block';
+                showAuthBanner(changePwdErr, changePwdErr, 'Las nuevas contraseñas no coinciden.', 'block');
                 return;
             }
-            try {
-                await Api.changePassword(curr, next);
-                resetChangePasswordForm();
-                accountModal.style.display = 'none';
-                showToast('Contraseña actualizada correctamente');
-            } catch (err) {
-                changePwdErr.textContent = err.message || 'No se pudo actualizar la contraseña.';
-                changePwdErr.style.display = 'block';
-            }
+            const submitBtn = changePwdForm.querySelector('button[type="submit"]');
+            await withButtonLoading(submitBtn, 'Guardando...', async () => {
+                try {
+                    await Api.changePassword(curr, next);
+                    resetChangePasswordForm();
+                    accountModal.style.display = 'none';
+                    showToast('Contraseña actualizada correctamente');
+                } catch (err) {
+                    showAuthBanner(changePwdErr, changePwdErr, err.message || 'No se pudo actualizar la contraseña.', 'block');
+                }
+            });
         });
     }
     if (accountLogoutBtn && accountModal) {
@@ -3311,23 +3507,23 @@ function setupEventListeners() {
             const u = document.getElementById('login-username').value.trim();
             const p = document.getElementById('login-password').value;
             if (!u || !p) {
-                if (loginErrorText) loginErrorText.textContent = 'Por favor ingresa usuario y contraseña';
-                if (loginErrorBanner) loginErrorBanner.style.display = 'flex';
+                showAuthBanner(loginErrorBanner, loginErrorText, 'Por favor ingresa usuario o correo y contraseña');
                 return;
             }
-            try {
-                const success = await Auth.login(u, p);
-                if (success) { 
-                    loginModal.style.display = 'none'; 
-                    loginForm.reset(); 
-                } else {
-                    if (loginErrorText) loginErrorText.textContent = 'Usuario o contraseña incorrectos';
-                    if (loginErrorBanner) loginErrorBanner.style.display = 'flex';
+            const submitBtn = loginForm.querySelector('button[type="submit"]');
+            await withButtonLoading(submitBtn, 'Iniciando sesión...', async () => {
+                try {
+                    const success = await Auth.login(u, p);
+                    if (success) { 
+                        loginModal.style.display = 'none'; 
+                        loginForm.reset(); 
+                    } else {
+                        showAuthBanner(loginErrorBanner, loginErrorText, 'Usuario o contraseña incorrectos');
+                    }
+                } catch (err) {
+                    showAuthBanner(loginErrorBanner, loginErrorText, err.message || 'Error al iniciar sesión');
                 }
-            } catch (err) {
-                if (loginErrorText) loginErrorText.textContent = err.message || 'Error al iniciar sesión';
-                if (loginErrorBanner) loginErrorBanner.style.display = 'flex';
-            }
+            });
         });
     }
 
@@ -3345,14 +3541,40 @@ function setupEventListeners() {
     const verifyErrorBanner = document.getElementById('verify-error-banner');
     const verifyErrorText = document.getElementById('verify-error-text');
     const regSubmitBtn = document.getElementById('register-submit-btn');
+    const regEmailInput = document.getElementById('register-email');
+    const regConfirmEmailInput = document.getElementById('register-confirm-email');
+    const regEmailHint = document.getElementById('register-email-hint');
+    const regUsernameInput = document.getElementById('register-username');
+    const regUsernameNote = document.getElementById('register-username-note');
+    const regPasswordInput = document.getElementById('register-password');
+    const regPwdRules = document.getElementById('register-pwd-rules');
+
+    bindEmailTypoHint(regEmailInput, regEmailHint, regConfirmEmailInput);
+    bindPasswordChecklist(regPasswordInput, regPwdRules);
+    if (regUsernameInput && regUsernameNote) {
+        regUsernameInput.addEventListener('input', () => {
+            const val = regUsernameInput.value;
+            const hasInvalid = /\s|[^a-zA-Z0-9_.-]/.test(val);
+            regUsernameNote.style.color = hasInvalid ? '#DC2626' : '';
+            regUsernameNote.textContent = hasInvalid
+                ? '⚠️ Sin espacios ni acentos: usa solo letras, números, . _ o -'
+                : 'Sin espacios ni acentos (3–30 caracteres: letras, números, . _ -)';
+        });
+    }
 
     function resetRegisterModal() {
         if (regErrorBanner) regErrorBanner.style.display = 'none';
         if (verifyErrorBanner) verifyErrorBanner.style.display = 'none';
+        if (regEmailHint) { regEmailHint.style.display = 'none'; regEmailHint.innerHTML = ''; }
+        if (regUsernameNote) {
+            regUsernameNote.style.color = '';
+            regUsernameNote.textContent = 'Sin espacios ni acentos (3–30 caracteres: letras, números, . _ -)';
+        }
         if (step1Container) step1Container.style.display = 'flex';
         if (step2Container) step2Container.style.display = 'none';
         if (registerForm) registerForm.reset();
         if (verifyForm) verifyForm.reset();
+        renderPasswordChecklist(regPwdRules, '');
     }
 
     if (openRegister) openRegister.addEventListener('click', async (e) => { 
@@ -3363,9 +3585,11 @@ function setupEventListeners() {
         if (regSubmitBtn) {
             try {
                 const cfg = await Api.getAuthConfig();
-                regSubmitBtn.textContent = (cfg && cfg.requireEmailVerification === false)
-                    ? 'Crear cuenta'
-                    : 'Siguiente: Verificar correo';
+                if (regSubmitBtn.dataset.loading !== '1') {
+                    regSubmitBtn.textContent = (cfg && cfg.requireEmailVerification === false)
+                        ? 'Crear cuenta'
+                        : 'Siguiente: Verificar correo';
+                }
             } catch (_) {}
         }
     });
@@ -3383,66 +3607,68 @@ function setupEventListeners() {
             e.preventDefault();
             if (regErrorBanner) regErrorBanner.style.display = 'none';
 
-            const email = document.getElementById('register-email').value.trim();
-            const u = document.getElementById('register-username').value.trim();
-            const p = document.getElementById('register-password').value;
+            const email = regEmailInput.value.trim().toLowerCase();
+            const confirmEmail = regConfirmEmailInput ? regConfirmEmailInput.value.trim().toLowerCase() : email;
+            const u = regUsernameInput.value.trim();
+            const p = regPasswordInput.value;
             const confirmP = document.getElementById('register-confirm-password').value;
 
             // Validaciones
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
             if (!emailRegex.test(email)) {
-                regErrorText.textContent = 'Ingresa un correo electrónico válido';
-                regErrorBanner.style.display = 'flex';
+                showAuthBanner(regErrorBanner, regErrorText, 'Ingresa un correo electrónico válido');
+                return;
+            }
+            if (email !== confirmEmail) {
+                showAuthBanner(regErrorBanner, regErrorText, 'Los correos electrónicos no coinciden. Verifica el dominio (ej. @gmail.com o @upsin.edu.mx).');
                 return;
             }
             if (!/^[a-zA-Z0-9_.-]{3,30}$/.test(u)) {
-                regErrorText.textContent = 'El usuario debe tener entre 3 y 30 caracteres (letras, números, . _ -)';
-                regErrorBanner.style.display = 'flex';
+                showAuthBanner(regErrorBanner, regErrorText, 'El usuario debe tener entre 3 y 30 caracteres (sin espacios ni acentos; solo letras, números, . _ -)');
                 return;
             }
-            if (p.length < 8) {
-                regErrorText.textContent = 'La contraseña debe tener al menos 8 caracteres';
-                regErrorBanner.style.display = 'flex';
+            if (!validateStrongPasswordClient(p).ok) {
+                showAuthBanner(regErrorBanner, regErrorText, STRONG_PWD_MSG);
                 return;
             }
             if (p !== confirmP) {
-                regErrorText.textContent = 'Las contraseñas no coinciden';
-                regErrorBanner.style.display = 'flex';
+                showAuthBanner(regErrorBanner, regErrorText, 'Las contraseñas no coinciden');
                 return;
             }
 
-            try {
-                // Solicitar código de verificación al backend (en Beta sin correo, registra directo)
-                const res = await Api.sendVerificationCode(email);
-                if (res && res.skipVerification) {
-                    await Api.register(email, u, p, '');
-                    showToast('¡Cuenta creada con éxito! Ya puedes iniciar sesión.');
-                    registerModal.style.display = 'none';
-                    resetRegisterModal();
-                    if (loginErrorBanner) loginErrorBanner.style.display = 'none';
-                    loginModal.style.display = 'flex';
-                    return;
+            await withButtonLoading(regSubmitBtn, 'Enviando código...', async () => {
+                try {
+                    // Solicitar código de verificación al backend (en Beta sin correo, registra directo)
+                    const res = await Api.sendVerificationCode(email);
+                    if (res && res.skipVerification) {
+                        await Api.register(email, u, p, '');
+                        showToast('¡Cuenta creada con éxito! Ya puedes iniciar sesión.');
+                        registerModal.style.display = 'none';
+                        resetRegisterModal();
+                        if (loginErrorBanner) loginErrorBanner.style.display = 'none';
+                        loginModal.style.display = 'flex';
+                        return;
+                    }
+
+                    window._tempRegEmail = email;
+                    window._tempRegUsername = u;
+                    window._tempRegPassword = p;
+
+                    // Pasar al Paso 2
+                    step1Container.style.display = 'none';
+                    step2Container.style.display = 'flex';
+                    const emailDisplay = document.getElementById('register-email-display');
+                    if (emailDisplay) emailDisplay.textContent = email;
+
+                    if (res && res.code) {
+                        showToast(`📲 Local: Tu código para ${email} es ${res.code}`);
+                    } else {
+                        showToast('Código de verificación enviado a tu correo.');
+                    }
+                } catch (err) {
+                    showAuthBanner(regErrorBanner, regErrorText, err.message || 'Error al validar el correo');
                 }
-
-                window._tempRegEmail = email;
-                window._tempRegUsername = u;
-                window._tempRegPassword = p;
-
-                // Pasar al Paso 2
-                step1Container.style.display = 'none';
-                step2Container.style.display = 'flex';
-                const emailDisplay = document.getElementById('register-email-display');
-                if (emailDisplay) emailDisplay.textContent = email;
-
-                if (res && res.code) {
-                    showToast(`📲 Demo: Tu código para ${email} es ${res.code}`);
-                } else {
-                    showToast('Código de verificación enviado a tu correo.');
-                }
-            } catch (err) {
-                regErrorText.textContent = err.message || 'Error al validar el correo';
-                regErrorBanner.style.display = 'flex';
-            }
+            });
         });
     }
 
@@ -3454,29 +3680,30 @@ function setupEventListeners() {
 
             const codeInput = document.getElementById('register-code-input').value.trim();
             if (!/^\d{6}$/.test(codeInput)) {
-                verifyErrorText.textContent = 'Ingresa un código de 6 dígitos';
-                verifyErrorBanner.style.display = 'flex';
+                showAuthBanner(verifyErrorBanner, verifyErrorText, 'Ingresa un código de 6 dígitos');
                 return;
             }
 
-            try {
-                const res = await Api.register(
-                    window._tempRegEmail,
-                    window._tempRegUsername,
-                    window._tempRegPassword,
-                    codeInput
-                );
-                if (res) {
-                    showToast('¡Cuenta creada y verificada con éxito! Ya puedes iniciar sesión.');
-                    registerModal.style.display = 'none';
-                    resetRegisterModal();
-                    if (loginErrorBanner) loginErrorBanner.style.display = 'none';
-                    loginModal.style.display = 'flex';
+            const verifyBtn = verifyForm.querySelector('button[type="submit"]');
+            await withButtonLoading(verifyBtn, 'Verificando...', async () => {
+                try {
+                    const res = await Api.register(
+                        window._tempRegEmail,
+                        window._tempRegUsername,
+                        window._tempRegPassword,
+                        codeInput
+                    );
+                    if (res) {
+                        showToast('¡Cuenta creada y verificada con éxito! Ya puedes iniciar sesión.');
+                        registerModal.style.display = 'none';
+                        resetRegisterModal();
+                        if (loginErrorBanner) loginErrorBanner.style.display = 'none';
+                        loginModal.style.display = 'flex';
+                    }
+                } catch (err) {
+                    showAuthBanner(verifyErrorBanner, verifyErrorText, err.message || 'Código incorrecto o error al crear la cuenta');
                 }
-            } catch (err) {
-                verifyErrorText.textContent = err.message || 'Código incorrecto o error al crear la cuenta';
-                verifyErrorBanner.style.display = 'flex';
-            }
+            });
         });
     }
 
@@ -3484,16 +3711,19 @@ function setupEventListeners() {
     if (resendLink) {
         resendLink.addEventListener('click', async (e) => {
             e.preventDefault();
-            try {
-                const res = await Api.sendVerificationCode(window._tempRegEmail);
-                if (res && res.code) {
-                    showToast(`📲 Demo: Nuevo código enviado: ${res.code}`);
-                } else {
-                    showToast('Nuevo código enviado a tu correo.');
+            await handleResendWithCooldown(resendLink, async () => {
+                try {
+                    const res = await Api.sendVerificationCode(window._tempRegEmail);
+                    if (res && res.code) {
+                        showToast(`📲 Local: Nuevo código enviado: ${res.code}`);
+                    } else {
+                        showToast('Nuevo código enviado a tu correo.');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                    throw err;
                 }
-            } catch (err) {
-                showToast(err.message, 'error');
-            }
+            });
         });
     }
 
@@ -3507,21 +3737,40 @@ function setupEventListeners() {
         });
     }
 
-    // Forgot Password modal
+    // Forgot Password modal (2 pasos reales)
     const forgotModal = document.getElementById('forgot-modal');
     const forgotClose = document.getElementById('forgot-close');
     const forgotForm = document.getElementById('forgot-form');
+    const resetPwdForm = document.getElementById('reset-password-form');
+    const forgotStep1 = document.getElementById('forgot-step-1-email');
+    const forgotStep2 = document.getElementById('forgot-step-2-reset');
+    const forgotEmailInput = document.getElementById('forgot-email');
+    const forgotEmailHint = document.getElementById('forgot-email-hint');
+    const forgotEmailDisplay = document.getElementById('forgot-email-display');
+    const resetNewPwdInput = document.getElementById('reset-new-password');
+    const resetPwdRules = document.getElementById('reset-pwd-rules');
     const openForgot = document.getElementById('open-forgot');
     const forgotBackLogin = document.getElementById('forgot-back-login');
+    const forgotResendLink = document.getElementById('forgot-resend-code');
+    const forgotBackStep1 = document.getElementById('forgot-back-step-1');
     const forgotErrorBanner = document.getElementById('forgot-error-banner');
     const forgotErrorText = document.getElementById('forgot-error-text');
     const forgotSuccessBanner = document.getElementById('forgot-success-banner');
     const forgotSuccessText = document.getElementById('forgot-success-text');
 
+    bindEmailTypoHint(forgotEmailInput, forgotEmailHint);
+    bindPasswordChecklist(resetNewPwdInput, resetPwdRules);
+
     function resetForgotModal() {
         if (forgotErrorBanner) forgotErrorBanner.style.display = 'none';
         if (forgotSuccessBanner) forgotSuccessBanner.style.display = 'none';
+        if (forgotEmailHint) { forgotEmailHint.style.display = 'none'; forgotEmailHint.innerHTML = ''; }
+        if (forgotStep1) forgotStep1.style.display = 'flex';
+        if (forgotStep2) forgotStep2.style.display = 'none';
         if (forgotForm) forgotForm.reset();
+        if (resetPwdForm) resetPwdForm.reset();
+        renderPasswordChecklist(resetPwdRules, '');
+        window._tempResetEmail = '';
     }
 
     if (openForgot) {
@@ -3541,6 +3790,15 @@ function setupEventListeners() {
             loginModal.style.display = 'flex';
         });
     }
+    if (forgotBackStep1) {
+        forgotBackStep1.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (forgotErrorBanner) forgotErrorBanner.style.display = 'none';
+            if (forgotSuccessBanner) forgotSuccessBanner.style.display = 'none';
+            if (forgotStep2) forgotStep2.style.display = 'none';
+            if (forgotStep1) forgotStep1.style.display = 'flex';
+        });
+    }
 
     if (forgotForm) {
         forgotForm.addEventListener('submit', async (e) => {
@@ -3548,22 +3806,88 @@ function setupEventListeners() {
             if (forgotErrorBanner) forgotErrorBanner.style.display = 'none';
             if (forgotSuccessBanner) forgotSuccessBanner.style.display = 'none';
 
-            const email = document.getElementById('forgot-email').value.trim();
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            const email = forgotEmailInput.value.trim().toLowerCase();
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
             if (!emailRegex.test(email)) {
-                if (forgotErrorText) forgotErrorText.textContent = 'Ingresa un correo electrónico válido';
-                if (forgotErrorBanner) forgotErrorBanner.style.display = 'flex';
+                showAuthBanner(forgotErrorBanner, forgotErrorText, 'Ingresa un correo electrónico válido');
                 return;
             }
 
-            try {
-                const res = await Api.forgotPassword(email);
-                if (forgotSuccessText) forgotSuccessText.textContent = res.message || 'Enlace enviado con éxito';
-                if (forgotSuccessBanner) forgotSuccessBanner.style.display = 'flex';
-            } catch (err) {
-                if (forgotErrorText) forgotErrorText.textContent = err.message || 'No existe ninguna cuenta con este correo';
-                if (forgotErrorBanner) forgotErrorBanner.style.display = 'flex';
+            const forgotBtn = forgotForm.querySelector('button[type="submit"]');
+            await withButtonLoading(forgotBtn, 'Enviando código...', async () => {
+                try {
+                    const res = await Api.forgotPassword(email);
+                    window._tempResetEmail = email;
+                    if (forgotEmailDisplay) forgotEmailDisplay.textContent = email;
+                    if (forgotStep1) forgotStep1.style.display = 'none';
+                    if (forgotStep2) forgotStep2.style.display = 'flex';
+                    showAuthBanner(forgotSuccessBanner, forgotSuccessText, res.message || 'Código enviado a tu correo.');
+                    if (res && res.code) {
+                        showToast(`📲 Local: Código de recuperación para ${email}: ${res.code}`);
+                    }
+                } catch (err) {
+                    showAuthBanner(forgotErrorBanner, forgotErrorText, err.message || 'No se pudo enviar el código de recuperación');
+                }
+            });
+        });
+    }
+
+    if (forgotResendLink) {
+        forgotResendLink.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (!window._tempResetEmail) return;
+            await handleResendWithCooldown(forgotResendLink, async () => {
+                try {
+                    const res = await Api.forgotPassword(window._tempResetEmail);
+                    if (res && res.code) {
+                        showToast(`📲 Local: Nuevo código de recuperación: ${res.code}`);
+                    } else {
+                        showToast('Nuevo código de recuperación enviado.');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                    throw err;
+                }
+            });
+        });
+    }
+
+    if (resetPwdForm) {
+        resetPwdForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (forgotErrorBanner) forgotErrorBanner.style.display = 'none';
+            if (forgotSuccessBanner) forgotSuccessBanner.style.display = 'none';
+
+            const code = document.getElementById('reset-code-input').value.trim();
+            const newPwd = resetNewPwdInput.value;
+            const confirmPwd = document.getElementById('reset-confirm-password').value;
+
+            if (!/^\d{6}$/.test(code)) {
+                showAuthBanner(forgotErrorBanner, forgotErrorText, 'Ingresa el código de 6 dígitos');
+                return;
             }
+            if (!validateStrongPasswordClient(newPwd).ok) {
+                showAuthBanner(forgotErrorBanner, forgotErrorText, STRONG_PWD_MSG);
+                return;
+            }
+            if (newPwd !== confirmPwd) {
+                showAuthBanner(forgotErrorBanner, forgotErrorText, 'Las contraseñas nuevas no coinciden');
+                return;
+            }
+
+            const resetBtn = resetPwdForm.querySelector('button[type="submit"]');
+            await withButtonLoading(resetBtn, 'Restableciendo...', async () => {
+                try {
+                    await Api.resetPassword(window._tempResetEmail, code, newPwd);
+                    forgotModal.style.display = 'none';
+                    resetForgotModal();
+                    showToast('Contraseña restablecida con éxito. Ya puedes iniciar sesión.');
+                    if (loginErrorBanner) loginErrorBanner.style.display = 'none';
+                    loginModal.style.display = 'flex';
+                } catch (err) {
+                    showAuthBanner(forgotErrorBanner, forgotErrorText, err.message || 'No se pudo restablecer la contraseña');
+                }
+            });
         });
     }
 }
