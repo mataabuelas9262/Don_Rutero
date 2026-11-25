@@ -14,6 +14,7 @@
     
     <!-- Estilos de la Aplicación -->
     <link rel="stylesheet" href="css/styles.css">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
@@ -486,6 +487,11 @@
                 <span id="login-error-text">Error de validación</span>
             </div>
 
+            <div id="google-login-section" style="display: none; flex-direction: column; gap: 12px; margin-bottom: 14px;">
+                <div id="google-signin-btn-login" style="display: flex; justify-content: center; min-height: 42px;"></div>
+                <div class="auth-divider"><span>o con tu usuario</span></div>
+            </div>
+
             <form id="login-form" style="display:flex; flex-direction:column; gap:16px;">
                 <div class="form-group">
                     <label for="login-username">Usuario o Correo</label>
@@ -687,6 +693,14 @@
                 <div id="register-error-banner" class="auth-error-banner" style="display: none;">
                     <img src="assets/icons/ui_alerta_error.svg" alt="">
                     <span id="register-error-text">Error de validación</span>
+                </div>
+
+                <div id="google-register-section" style="display: none; flex-direction: column; gap: 12px;">
+                    <div id="google-signin-btn-register" style="display: flex; justify-content: center; min-height: 42px;"></div>
+                    <div id="google-register-divider" class="auth-divider"><span>o regístrate con correo</span></div>
+                </div>
+                <div id="register-google-only-note" style="display: none; font-size: 0.82rem; color: var(--text-secondary); text-align: center; line-height: 1.45; padding: 8px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px;">
+                    Crea tu cuenta en un clic con Google (tu correo queda verificado al instante sin esperar códigos).
                 </div>
 
                 <form id="register-form" style="display:flex; flex-direction:column; gap:14px;">

@@ -65,6 +65,19 @@ const Api = {
         return await response.json();
     },
 
+    loginWithGoogle: async (credential) => {
+        const response = await fetch(`${API_BASE_URL}/auth/google`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ credential })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'No se pudo iniciar sesión con Google');
+        }
+        return data;
+    },
+
     register: async (email, username, password, verificationCode) => {
         const response = await fetch(`${API_BASE_URL}/auth/register`, {
             method: 'POST',

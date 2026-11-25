@@ -59,11 +59,12 @@ public class SecurityConfig {
                 headers.addHeaderWriter(new StaticHeadersWriter("Permissions-Policy", "geolocation=(self), camera=(), microphone=()"));
                 headers.contentSecurityPolicy(csp -> csp.policyDirectives(
                     "default-src 'self'; " +
-                    "script-src 'self' 'unsafe-inline' https://unpkg.com; " +
-                    "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; " +
+                    "script-src 'self' 'unsafe-inline' https://unpkg.com https://accounts.google.com; " +
+                    "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com https://accounts.google.com; " +
                     "font-src 'self' https://fonts.gstatic.com data:; " +
-                    "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://unpkg.com; " +
-                    "connect-src 'self' https://nominatim.openstreetmap.org https://unpkg.com; " +
+                    "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://unpkg.com https://accounts.google.com https://lh3.googleusercontent.com; " +
+                    "connect-src 'self' https://nominatim.openstreetmap.org https://unpkg.com https://accounts.google.com; " +
+                    "frame-src https://accounts.google.com; " +
                     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
                 ));
             })

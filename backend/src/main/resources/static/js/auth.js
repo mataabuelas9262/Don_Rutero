@@ -38,6 +38,24 @@ const Auth = {
         }
     },
 
+    loginWithGoogle: async (credential) => {
+        try {
+            const data = await Api.loginWithGoogle(credential);
+            localStorage.setItem('token', data.token);
+            localStorage.setItem('username', data.username);
+            localStorage.setItem('role', data.role);
+            Auth.user = { username: data.username, role: data.role };
+            Auth.updateUI();
+            showToast(data.googleNewUser
+                ? '¡Cuenta creada y sesión iniciada con Google!'
+                : 'Sesión iniciada con Google');
+            return true;
+        } catch (err) {
+            showToast(err.message || 'Error al iniciar sesión con Google', 'error');
+            return false;
+        }
+    },
+
     register: async (email, username, password, verificationCode) => {
         try {
             await Api.register(email, username, password, verificationCode);

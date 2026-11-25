@@ -3030,6 +3030,83 @@ async function geolocateUser() {
 // EVENT LISTENERS
 // ----------------------------------------------------------
 
+let _googleGsiInitializedClientId = null;
+
+async function handleGoogleCredentialResponse(response) {
+    if (!response || !response.credential) return;
+    const ok = await Auth.loginWithGoogle(response.credential);
+    if (ok) {
+        const loginModal = document.getElementById('login-modal');
+        const registerModal = document.getElementById('register-modal');
+        const loginErr = document.getElementById('login-error-banner');
+        const regErr = document.getElementById('register-error-banner');
+        if (loginErr) loginErr.style.display = 'none';
+        if (regErr) regErr.style.display = 'none';
+        if (loginModal) loginModal.style.display = 'none';
+        if (registerModal) registerModal.style.display = 'none';
+    }
+}
+
+function renderGoogleSignInButtons(clientId, retry = 0) {
+    if (!clientId) return;
+    const gId = window.google && window.google.accounts && window.google.accounts.id;
+    if (!gId) {
+        if (retry < 15) {
+            setTimeout(() => renderGoogleSignInButtons(clientId, retry + 1), 300);
+        }
+        return;
+    }
+    if (_googleGsiInitializedClientId !== clientId) {
+        gId.initialize({
+            client_id: clientId,
+            callback: handleGoogleCredentialResponse,
+            auto_select: false
+        });
+        _googleGsiInitializedClientId = clientId;
+    }
+    ['google-signin-btn-login', 'google-signin-btn-register'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el || el.dataset.renderedClientId === clientId) return;
+        el.innerHTML = '';
+        gId.renderButton(el, {
+            theme: 'outline',
+            size: 'large',
+            text: 'continue_with',
+            shape: 'pill',
+            locale: 'es_419',
+            width: 310
+        });
+        el.dataset.renderedClientId = clientId;
+    });
+}
+
+async function initGoogleAuthIntegration({ forceConfig = false } = {}) {
+    try {
+        if (forceConfig || !window._authConfigCache) {
+            window._authConfigCache = await Api.getAuthConfig();
+        }
+        const cfg = window._authConfigCache || {};
+        const hasGoogle = Boolean(cfg.googleEnabled && cfg.googleClientId);
+        const loginSec = document.getElementById('google-login-section');
+        const regSec = document.getElementById('google-register-section');
+        const regDivider = document.getElementById('google-register-divider');
+        const regForm = document.getElementById('register-form');
+        const regGoogleOnlyNote = document.getElementById('register-google-only-note');
+
+        if (loginSec) loginSec.style.display = hasGoogle ? 'flex' : 'none';
+        if (regSec) regSec.style.display = hasGoogle ? 'flex' : 'none';
+
+        const googleOnlyRegister = hasGoogle && cfg.requireEmailVerification !== false && cfg.smtpConfigured === false;
+        if (regDivider) regDivider.style.display = googleOnlyRegister ? 'none' : 'flex';
+        if (regForm) regForm.style.display = googleOnlyRegister ? 'none' : 'flex';
+        if (regGoogleOnlyNote) regGoogleOnlyNote.style.display = googleOnlyRegister ? 'block' : 'none';
+
+        if (hasGoogle) {
+            renderGoogleSignInButtons(cfg.googleClientId);
+        }
+    } catch (_) {}
+}
+
 function setupEventListeners() {
     // Sidebar toggle -> Abre el Menú Principal Drawer
     const sidebarToggle = document.getElementById('sidebar-toggle');
@@ -3496,7 +3573,8 @@ function setupEventListeners() {
 
     if (loginBtn) loginBtn.addEventListener('click', () => { 
         if (loginErrorBanner) loginErrorBanner.style.display = 'none';
-        loginModal.style.display = 'flex'; 
+        loginModal.style.display = 'flex';
+        initGoogleAuthIntegration();
     });
     if (loginClose) loginClose.addEventListener('click', () => { loginModal.style.display = 'none'; });
 
@@ -3582,9 +3660,10 @@ function setupEventListeners() {
         loginModal.style.display = 'none'; 
         resetRegisterModal();
         registerModal.style.display = 'flex';
+        await initGoogleAuthIntegration({ forceConfig: true });
         if (regSubmitBtn) {
             try {
-                const cfg = await Api.getAuthConfig();
+                const cfg = window._authConfigCache || await Api.getAuthConfig();
                 if (regSubmitBtn.dataset.loading !== '1') {
                     regSubmitBtn.textContent = (cfg && cfg.requireEmailVerification === false)
                         ? 'Crear cuenta'
@@ -3593,6 +3672,7 @@ function setupEventListeners() {
             } catch (_) {}
         }
     });
+    initGoogleAuthIntegration();
     if (openLogin) openLogin.addEventListener('click', (e) => { 
         e.preventDefault(); 
         registerModal.style.display = 'none'; 

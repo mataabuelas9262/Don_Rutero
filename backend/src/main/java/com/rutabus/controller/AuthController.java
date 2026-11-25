@@ -4,6 +4,7 @@ import com.rutabus.entity.User;
 import com.rutabus.repository.UserRepository;
 import com.rutabus.security.JwtTokenProvider;
 import com.rutabus.service.EmailService;
+import com.rutabus.service.GoogleAuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,6 +20,8 @@ import org.springframework.web.bind.annotation.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.text.Normalizer;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -75,6 +78,9 @@ public class AuthController {
 
     @Autowired
     private EmailService emailService;
+
+    @Autowired
+    private GoogleAuthService googleAuthService;
 
     private static class VerificationEntry {
         final String code;
@@ -262,8 +268,80 @@ public class AuthController {
     public ResponseEntity<?> getAuthConfig() {
         return ResponseEntity.ok(Map.of(
                 "requireEmailVerification", requireEmailVerification,
-                "smtpConfigured", emailService.isSmtpConfigured()
+                "smtpConfigured", emailService.isSmtpConfigured(),
+                "googleEnabled", googleAuthService.isEnabled(),
+                "googleClientId", googleAuthService.isEnabled() ? googleAuthService.getClientId() : ""
         ));
+    }
+
+    @PostMapping("/google")
+    public ResponseEntity<?> authenticateWithGoogle(
+            @RequestBody(required = false) Map<String, String> request,
+            HttpServletRequest httpReq) {
+        if (isRateLimited(httpReq, "google")) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Demasiados intentos con Google. Espera un minuto."));
+        }
+        String credential = request != null ? request.get("credential") : null;
+        try {
+            GoogleAuthService.VerifiedGoogleUser gUser = googleAuthService.verifyIdToken(credential);
+            if (isDisallowedTestDomain(gUser.email())) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Dominio de correo no permitido."));
+            }
+
+            User user = userRepository.findByEmail(gUser.email()).orElse(null);
+            boolean isNewUser = false;
+            if (user == null) {
+                isNewUser = true;
+                user = new User();
+                user.setUsername(buildUniqueUsername(gUser.name(), gUser.email()));
+                user.setEmail(gUser.email());
+                byte[] randomBytes = new byte[32];
+                secureRandom.nextBytes(randomBytes);
+                user.setPassword(passwordEncoder.encode(Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes)));
+                user.setRole("ROLE_USER");
+                user = userRepository.save(user);
+            }
+
+            String jwt = tokenProvider.generateToken(user.getUsername(), user.getRole());
+            Map<String, Object> res = new HashMap<>();
+            res.put("token", jwt);
+            res.put("username", user.getUsername());
+            res.put("role", user.getRole());
+            res.put("googleNewUser", isNewUser);
+            return ResponseEntity.ok(res);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    private String buildUniqueUsername(String fullName, String email) {
+        String source = (fullName != null && !fullName.isBlank())
+                ? fullName
+                : email.substring(0, Math.max(1, email.indexOf('@')));
+        String ascii = Normalizer.normalize(source, Normalizer.Form.NFD)
+                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")
+                .toLowerCase()
+                .replaceAll("[^a-z0-9_.-]+", "_")
+                .replaceAll("^[_.-]+|[_.-]+$", "");
+        if (ascii.length() < 3) {
+            ascii = "pasajero_" + ascii;
+        }
+        String base = ascii.length() > 22 ? ascii.substring(0, 22) : ascii;
+        String candidate = base;
+        int attempt = 0;
+        while (userRepository.existsByUsername(candidate)) {
+            attempt++;
+            String suffix = "_" + (secureRandom.nextInt(900) + 100);
+            int maxPrefix = Math.min(base.length(), 30 - suffix.length());
+            candidate = base.substring(0, maxPrefix) + suffix;
+            if (attempt > 12) {
+                candidate = "user_" + Math.abs(secureRandom.nextInt(999999));
+            }
+        }
+        return candidate;
     }
 
     @PostMapping("/send-verification")
