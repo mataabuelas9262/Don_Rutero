@@ -60,8 +60,9 @@
                     <img src="assets/icons/ui_escudo.svg" alt="" style="width: 16px; height: 16px;"> Admin
                 </button>
                 <!-- Campana de notificaciones -->
-                <button class="btn-icon" id="btn-notificaciones" title="Notificaciones">
+                <button class="btn-icon" id="btn-notificaciones" title="Notificaciones" style="position:relative;">
                     <img src="assets/icons/ui_campana.svg" alt="Notificaciones" style="width:20px; height:20px;">
+                    <span id="notif-badge" class="notif-badge" style="display:none;">0</span>
                 </button>
             </div>
         </nav>
@@ -112,6 +113,7 @@
                         <button class="pill active" data-filter="all">Todas</button>
                         <button class="pill" data-filter="favoritas"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>Favoritas</button>
                         <button class="pill" data-filter="turistico"><img src="assets/icons/ui_turistico.svg" alt="" class="pill-icon-svg"> Turístico</button>
+                        <button class="pill" data-filter="guias">Guías</button>
                         <button class="pill" data-filter="centro"><img src="assets/icons/ui_centro.svg" alt="" class="pill-icon-svg"> Centro</button>
                         <button class="pill" data-filter="frecuente"><img src="assets/icons/ui_frecuente.svg" alt="" class="pill-icon-svg"> Frecuentes</button>
                     </div>
@@ -139,6 +141,9 @@
                         <p class="planner-subtitle">
                             Indica tu colonia, lugar o código postal de origen y destino para ver qué camión te lleva.
                         </p>
+
+                        <!-- Atajos personales de 1 toque (Casa / Chamba / Escuela) -->
+                        <div id="planner-shortcuts-row" class="planner-shortcuts-row" aria-label="Mis lugares frecuentes"></div>
                         
                         <!-- Origen Input -->
                         <div class="planner-field">
@@ -218,6 +223,19 @@
                     <p id="detail-desc" class="detail-desc"></p>
                     <div id="detail-meta" class="route-meta" style="margin-bottom:4px;"></div>
 
+                    <!-- Pulso comunitario y compartir ruta -->
+                    <div class="detail-pulse-bar">
+                        <div id="detail-sighting-status" class="detail-sighting-status">Sin avistamientos recientes</div>
+                        <div class="detail-pulse-actions">
+                            <button id="detail-sighting-btn" type="button" class="btn-pulse-sighting" title="Avisar a otros pasajeros que acaba de pasar un camión">
+                                ¡Vi pasar uno!
+                            </button>
+                            <button id="detail-share-btn" type="button" class="btn-pulse-share" title="Compartir esta ruta">
+                                Compartir
+                            </button>
+                        </div>
+                    </div>
+
                     <div>
                         <h3 class="section-title" style="margin-bottom:10px;">Recorrido</h3>
                         <div id="detail-stops-timeline" class="stops-timeline"></div>
@@ -268,8 +286,24 @@
                         <button id="onboard-speed-btn" type="button" class="onboard-ctrl-btn" onclick="cycleOnboardSpeed()">1x</button>
                     </div>
                 </div>
+                <div class="onboard-extra-row">
+                    <button id="onboard-alarm-btn" type="button" class="onboard-mini-btn active" onclick="toggleOnboardAlarm()" title="Vibrar y sonar cuando falte poco para bajar">
+                        <img src="assets/icons/ui_campana.svg" alt="" style="width:13px;height:13px;vertical-align:-2px;"> Alarma bajada: ON
+                    </button>
+                    <button id="onboard-bg-notif-btn" type="button" class="onboard-mini-btn" onclick="toggleOnboardBackgroundNotification()" title="Mostrar progreso en la barra de notificaciones aunque salgas del navegador">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg> Avisar en barra: OFF
+                    </button>
+                </div>
             </div>
         </section>
+
+        <!-- ========== BANNER VIVO DE CIUDAD (EVENTOS / BLOQUEOS >=3) ========== -->
+        <div id="city-live-banner" class="city-live-banner" style="display:none;" role="status" aria-live="polite">
+            <span id="city-live-banner-badge" class="city-live-badge">AVISO</span>
+            <div class="city-live-text" id="city-live-banner-text"></div>
+            <button type="button" id="city-live-banner-more" class="city-live-action">Ver</button>
+            <button type="button" id="city-live-banner-close" class="city-live-close" title="Ocultar banner" aria-label="Ocultar banner">&times;</button>
+        </div>
 
         <!-- ========== FAB TRÁFICO Y LEYENDA ========== -->
         <button id="fab-traffic" type="button" class="fab-traffic" title="Mostrar u ocultar tráfico en Mazatlán" aria-pressed="false" onclick="toggleTrafficLayer()">
@@ -322,6 +356,43 @@
             </div>
             
             <div id="notifications-feed" style="display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow-y: auto; padding-right: 4px;">
+                <div id="notifications-live-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+
+                <!-- Pulso en vivo: reportar bloqueo / incidente rápido -->
+                <div class="pulse-report-box">
+                    <div class="pulse-report-head">
+                        <span style="display:inline-flex;align-items:center;gap:6px;">
+                            <img src="assets/icons/ui_alerta_desvio.svg" alt="" style="width:15px;height:15px;flex-shrink:0;">
+                            <span>Reportar bloqueo o incidente vial</span>
+                        </span>
+                        <button type="button" id="toggle-pulse-incident-form" class="pulse-mini-link">+ Reportar ahora</button>
+                    </div>
+                    <form id="pulse-incident-form" style="display:none; flex-direction:column; gap:7px; margin-top:8px;">
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                            <select id="pulse-inc-type" class="form-control" style="font-size:0.76rem; padding:6px 8px;">
+                                <option value="bloqueo">Bloqueo / Calle cerrada</option>
+                                <option value="inundacion">Calle inundada</option>
+                                <option value="desvio">Desvío de ruta</option>
+                                <option value="sin_servicio">Ya no están pasando</option>
+                            </select>
+                            <select id="pulse-inc-zone" class="form-control" style="font-size:0.76rem; padding:6px 8px;">
+                                <option value="malecon">Malecón (Av. Del Mar)</option>
+                                <option value="buelna">Av. Rafael Buelna</option>
+                                <option value="ejercito">Av. Ejército Mexicano</option>
+                                <option value="insurgentes">Av. Insurgentes</option>
+                                <option value="sabalo">Zona Dorada / Sábalo</option>
+                                <option value="leyva">Av. Gabriel Leyva</option>
+                                <option value="centro">Centro / Mercado</option>
+                                <option value="colosio">Blvd. Colosio</option>
+                                <option value="custom">Otra zona...</option>
+                            </select>
+                        </div>
+                        <input type="text" id="pulse-inc-custom-zone" class="form-control" placeholder="Escribe calle o colonia..." style="display:none; font-size:0.76rem; padding:6px 8px;" maxlength="120">
+                        <input type="text" id="pulse-inc-desc" class="form-control" placeholder="Detalle breve (ej. cerrada frente al Acuario)" maxlength="260" style="font-size:0.76rem; padding:6px 8px;">
+                        <button type="submit" class="btn btn-primary" style="padding:7px 10px; font-size:0.78rem;">Enviar reporte en vivo (3 = Alerta)</button>
+                    </form>
+                    <div id="pulse-incidents-list" style="display:flex; flex-direction:column; gap:6px; margin-top:6px;"></div>
+                </div>
                 <div class="notice-card">
                     <div class="notice-icon success">
                         <img src="assets/icons/ui_moneda.svg" alt="">

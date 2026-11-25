@@ -373,6 +373,12 @@ function renderRoutes(routes, options = {}) {
             : `<div class="route-fare-group"><span class="route-fare">${formatCompactFare(normalPrice)}</span><span class="route-fare-student">Est. ${formatCompactFare(studentPrice)}</span></div>`;
         const freqText = route.frequencyMinutes ? ` · cada ${route.frequencyMinutes} min` : '';
         const isFav = isFavoriteRoute(route.id);
+        const sighting = (typeof PulseState !== 'undefined' && PulseState.sightings)
+            ? PulseState.sightings[String(route.id)]
+            : null;
+        const sightingBadgeHtml = sighting
+            ? `<span class="route-pulse-badge" title="Reportado por pasajero de Don Rutero">● Pasó hace ${Number(sighting.minutesAgo) <= 0 ? '<1' : Number(sighting.minutesAgo)} min</span>`
+            : '';
 
         let distanceBadgeHtml = '';
         if (typeof route._distanceMeters === 'number' && isFinite(route._distanceMeters)) {
@@ -395,6 +401,7 @@ function renderRoutes(routes, options = {}) {
                 <div class="route-submeta">
                     <span class="concesionario-dot ${isAguilas ? 'aguilas' : 'alianza'}"></span>
                     <span>${concesionarioLabel}${freqText}</span>
+                    ${sightingBadgeHtml}
                     ${distanceBadgeHtml}
                 </div>
                 <div class="route-desc">${escapeUserHtml(route.description || '')}</div>
@@ -519,6 +526,7 @@ function showDetailPanel(route, routeStops, proximityInfo = null) {
     }
 
     document.getElementById('detail-desc').textContent = route.description || '';
+    updateDetailPulseActions(route, routeStops);
 
     // Meta tags with SVG icons
     const metaContainer = document.getElementById('detail-meta');
@@ -940,6 +948,10 @@ function matchesCategoryFilter(r) {
 }
 
 function updateRouteDisplay() {
+    if (currentFilter === 'guias') {
+        renderTouristGuidesList();
+        return;
+    }
     const q = currentSearch.toLowerCase().trim();
     const categoryRoutes = allRoutes.filter(matchesCategoryFilter);
 
@@ -2552,9 +2564,15 @@ function calculateTripRoute() {
                                     </div>
                                 </div>
                             </div>
-                            <button type="button" class="btn-onboard-start" onclick="event.stopPropagation(); startOnboardTrip(${idx})">
-                                <img src="assets/icons/ui_camion.svg" alt="" style="width:15px;height:15px;filter:brightness(0) invert(1);"> Voy a bordo · Seguir viaje
-                            </button>
+                            <div class="trip-action-row">
+                                <button type="button" class="btn-onboard-start" style="margin-top:0;flex:1;" onclick="event.stopPropagation(); startOnboardTrip(${idx})">
+                                    <img src="assets/icons/ui_camion.svg" alt="" style="width:15px;height:15px;filter:brightness(0) invert(1);"> Voy a bordo
+                                </button>
+                                <button type="button" class="btn-trip-share" onclick="event.stopPropagation(); shareTripOption(${idx})" title="Compartir cómo llegar por WhatsApp">
+                                    Compartir
+                                </button>
+                            </div>
+                            ${formatTripSavingsHtml(opt)}
                         </div>
                     </div>
                 `;
@@ -2611,9 +2629,15 @@ function calculateTripRoute() {
                                     </div>
                                 </div>
                             </div>
-                            <button type="button" class="btn-onboard-start" onclick="event.stopPropagation(); startOnboardTrip(${idx})">
-                                <img src="assets/icons/ui_camion.svg" alt="" style="width:15px;height:15px;filter:brightness(0) invert(1);"> Voy a bordo · Seguir viaje
-                            </button>
+                            <div class="trip-action-row">
+                                <button type="button" class="btn-onboard-start" style="margin-top:0;flex:1;" onclick="event.stopPropagation(); startOnboardTrip(${idx})">
+                                    <img src="assets/icons/ui_camion.svg" alt="" style="width:15px;height:15px;filter:brightness(0) invert(1);"> Voy a bordo
+                                </button>
+                                <button type="button" class="btn-trip-share" onclick="event.stopPropagation(); shareTripOption(${idx})" title="Compartir cómo llegar por WhatsApp">
+                                    Compartir
+                                </button>
+                            </div>
+                            ${formatTripSavingsHtml(opt)}
                         </div>
                     </div>
                 `;
@@ -3024,7 +3048,10 @@ function setupEventListeners() {
     const notificationsReportBtn = document.getElementById('notifications-report-btn');
     
     if (btnNotificaciones && notificationsModal) {
-        btnNotificaciones.addEventListener('click', () => notificationsModal.style.display = 'flex');
+        btnNotificaciones.addEventListener('click', () => {
+            notificationsModal.style.display = 'flex';
+            loadLivePulse();
+        });
         notificationsModal.addEventListener('click', (e) => {
             if (e.target === notificationsModal) notificationsModal.style.display = 'none';
         });
@@ -3841,7 +3868,26 @@ function handleDeepLinkParams() {
             switchSidebarMode('rutas');
             selectStopSuggestion(encodeURIComponent(JSON.stringify(stop)));
             showToast(`Paradero "${stop.name}" abierto desde QR`);
+            return;
         }
+    }
+
+    const fromLat = parseFloat(params.get('fromLat'));
+    const fromLng = parseFloat(params.get('fromLng'));
+    const toLat = parseFloat(params.get('toLat'));
+    const toLng = parseFloat(params.get('toLng'));
+    if ([fromLat, fromLng, toLat, toLng].every((v) => isFinite(v))) {
+        const fromName = params.get('fromName') || 'Origen compartido';
+        const toName = params.get('toName') || 'Destino compartido';
+        switchSidebarMode('planificador');
+        selectedOrigin = { lat: fromLat, lng: fromLng, name: fromName };
+        selectedDestination = { lat: toLat, lng: toLng, name: toName };
+        const oIn = document.getElementById('origin-input');
+        const dIn = document.getElementById('destination-input');
+        if (oIn) oIn.value = fromName;
+        if (dIn) dIn.value = toName;
+        calculateTripRoute();
+        showToast('Viaje compartido abierto en "¿Cómo Llego?"');
     }
 }
 
@@ -3870,7 +3916,10 @@ const onboardState = {
     corridorTrafficSpeedKmh: 22,
     liveBusSpeedKmh: null,
     lastGpsFix: null,
-    lastTelemetrySentMs: 0
+    lastTelemetrySentMs: 0,
+    alarmEnabled: true,
+    bgNotifEnabled: false,
+    lastNotifSyncMs: 0
 };
 
 function normalizeLatLngPoint(p) {
@@ -4089,12 +4138,26 @@ function updateOnboardHudAtDistance(distM) {
     if (inFirstLeg && isNearAction && !onboardState.notifiedNearLeg) {
         onboardState.notifiedNearLeg = true;
         showToast('Próximo transbordo en menos de 300 m');
-        if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+        if (onboardState.alarmEnabled) {
+            if (navigator.vibrate) navigator.vibrate([160, 80, 160]);
+            if (typeof playDropoffChime === 'function') playDropoffChime(false);
+        }
     }
     if (!inFirstLeg && isNearAction && !isArrived && !onboardState.notifiedNearEnd) {
         onboardState.notifiedNearEnd = true;
         showToast('¡Prepárate para bajar! Tu parada está a menos de 300 m');
-        if (navigator.vibrate) navigator.vibrate([160, 80, 160]);
+        if (onboardState.alarmEnabled) {
+            if (navigator.vibrate) navigator.vibrate([220, 90, 220, 90, 280]);
+            if (typeof playDropoffChime === 'function') playDropoffChime(true);
+            if (typeof syncOnboardSystemNotification === 'function') {
+                syncOnboardSystemNotification(true);
+            }
+        }
+    }
+    if (onboardState.bgNotifEnabled || document.hidden) {
+        if (typeof syncOnboardSystemNotification === 'function') {
+            syncOnboardSystemNotification(false);
+        }
     }
     syncOnboardHudViewportOffset();
 }
@@ -4379,6 +4442,13 @@ function stopOnboardTrip({ silent = false } = {}) {
     onboardState.active = false;
     onboardState.option = null;
     onboardState.points = [];
+    if (typeof closeOnboardSystemNotification === 'function') closeOnboardSystemNotification();
+    onboardState.bgNotifEnabled = false;
+    const bgBtn = document.getElementById('onboard-bg-notif-btn');
+    if (bgBtn) {
+        bgBtn.classList.remove('active');
+        bgBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg> Avisar en barra: OFF';
+    }
     if (onboardState.busMarker && mapInstance) {
         mapInstance.removeLayer(onboardState.busMarker);
         onboardState.busMarker = null;
@@ -4511,9 +4581,15 @@ window.openDonationModal = openDonationModal;
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         initTrafficModule();
+        initCommunityPulse();
+        renderPlannerShortcuts();
+        setupOnboardBackgroundListeners();
     });
 } else {
     initTrafficModule();
+    initCommunityPulse();
+    renderPlannerShortcuts();
+    setupOnboardBackgroundListeners();
 }
 
 // ----------------------------------------------------------
@@ -4716,5 +4792,709 @@ function initTrafficModule() {
 }
 
 window.toggleTrafficLayer = toggleTrafficLayer;
+
+// ----------------------------------------------------------
+// MÓDULO DE PULSO COMUNITARIO, AVISOS VIVOS Y GUÍAS MAZATLÁN
+// ----------------------------------------------------------
+const ZONE_CENTER_PRESETS = {
+    malecon: { label: 'Malecón (Av. Del Mar)', lat: 23.2247, lng: -106.4259 },
+    buelna: { label: 'Av. Rafael Buelna', lat: 23.2442, lng: -106.4345 },
+    ejercito: { label: 'Av. Ejército Mexicano', lat: 23.2285, lng: -106.4205 },
+    insurgentes: { label: 'Av. Insurgentes', lat: 23.2318, lng: -106.4092 },
+    sabalo: { label: 'Zona Dorada / Sábalo', lat: 23.2555, lng: -106.4581 },
+    leyva: { label: 'Av. Gabriel Leyva', lat: 23.2148, lng: -106.4060 },
+    centro: { label: 'Centro / Mercado', lat: 23.2041, lng: -106.4218 },
+    colosio: { label: 'Blvd. Colosio', lat: 23.2452, lng: -106.3953 }
+};
+
+const PulseState = {
+    data: null,
+    sightings: {},
+    activeNotices: [],
+    incidents: [],
+    dismissedBannerIds: new Set(),
+    pollTimer: null
+};
+
+async function loadLivePulse() {
+    try {
+        if (typeof Api === 'undefined' || typeof Api.getLivePulse !== 'function') return null;
+        const data = await Api.getLivePulse();
+        PulseState.data = data;
+        PulseState.activeNotices = Array.isArray(data.activeNotices) ? data.activeNotices : [];
+        PulseState.incidents = Array.isArray(data.incidents) ? data.incidents : [];
+        PulseState.sightings = data.sightingsByRoute || {};
+
+        updateNotificationsBadgeAndFeed();
+        renderCityLiveBanner();
+        if (typeof renderPulseMarkers === 'function') {
+            renderPulseMarkers(data);
+        }
+        // Actualizar chips "Pasó hace X min" si la lista de rutas está visible
+        if (currentFilter !== 'guias' && Array.isArray(allRoutes) && allRoutes.length > 0 && !document.getElementById('detail-panel')?.classList.contains('visible')) {
+            // Refresco ligero en badges existentes sin reconstruir innecesariamente si coincide DOM
+            document.querySelectorAll('.route-card[data-id]').forEach((card) => {
+                const rid = card.getAttribute('data-id');
+                const sub = card.querySelector('.route-submeta');
+                if (!sub) return;
+                const oldBadge = sub.querySelector('.route-pulse-badge');
+                const s = PulseState.sightings[String(rid)];
+                if (s) {
+                    const text = `● Pasó hace ${Number(s.minutesAgo) <= 0 ? '<1' : Number(s.minutesAgo)} min`;
+                    if (oldBadge) {
+                        oldBadge.textContent = text;
+                    } else {
+                        const span = document.createElement('span');
+                        span.className = 'route-pulse-badge';
+                        span.title = 'Reportado por pasajero de Don Rutero';
+                        span.textContent = text;
+                        const distBadge = sub.querySelector('.distance-badge');
+                        if (distBadge) sub.insertBefore(span, distBadge);
+                        else sub.appendChild(span);
+                    }
+                } else if (oldBadge) {
+                    oldBadge.remove();
+                }
+            });
+        }
+        return data;
+    } catch (err) {
+        console.warn('No se pudo actualizar pulso comunitario:', err && err.message ? err.message : err);
+        return null;
+    }
+}
+
+function updateNotificationsBadgeAndFeed() {
+    const badge = document.getElementById('notif-badge');
+    const liveList = document.getElementById('notifications-live-list');
+    const incList = document.getElementById('pulse-incidents-list');
+
+    const totalAlertCount = PulseState.activeNotices.length;
+    if (badge) {
+        badge.textContent = totalAlertCount > 9 ? '9+' : String(totalAlertCount);
+        badge.style.display = totalAlertCount > 0 ? 'inline-flex' : 'none';
+    }
+
+    if (liveList) {
+        if (PulseState.activeNotices.length === 0) {
+            liveList.innerHTML = '<div class="pulse-empty-hint">Sin bloqueos ni avisos urgentes activos en este momento.</div>';
+        } else {
+            liveList.innerHTML = PulseState.activeNotices.map((n) => {
+                const isAuto = n.origin === 'auto_comunidad';
+                const sev = n.severity === 'danger' ? 'danger' : (n.severity === 'warning' ? 'warning' : 'info');
+                const tag = isAuto ? `Comunidad · ${Number(n.reportCount || 3)} reportes` : 'Aviso Don Rutero';
+                const clearBtn = isAuto
+                    ? `<button type="button" class="btn-pulse-clear" onclick="confirmNoticeClearFromUi(${Number(n.id)})">Ya está todo bien${Number(n.clearCount || 0) > 0 ? ` (${Number(n.clearCount)}/2)` : ''}</button>`
+                    : '';
+                return `
+                    <div class="live-notice-card sev-${sev}">
+                        <div class="live-notice-top">
+                            <span class="live-notice-origin">${escapeUserHtml(tag)}</span>
+                            <span class="live-notice-zone">${escapeUserHtml(n.zoneLabel || 'Mazatlán')}</span>
+                        </div>
+                        <h4 class="live-notice-title">${escapeUserHtml(n.title)}</h4>
+                        <p class="live-notice-body">${escapeUserHtml(n.body)}</p>
+                        ${clearBtn ? `<div class="live-notice-actions">${clearBtn}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+    }
+
+    if (incList) {
+        const pendingIncidents = PulseState.incidents.filter((i) => !i.escalated);
+        if (pendingIncidents.length === 0) {
+            incList.innerHTML = '';
+        } else {
+            incList.innerHTML = pendingIncidents.map((inc) => `
+                <div class="pulse-pending-item">
+                    <div style="min-width:0;">
+                        <strong>${escapeUserHtml(inc.zoneLabel)}</strong> · ${escapeUserHtml(inc.description)}
+                        <span class="pulse-progress-pill">${Number(inc.distinctReporters)}/${Number(inc.threshold || 3)}</span>
+                    </div>
+                    <button type="button" class="pulse-mini-link" onclick="confirmZoneClearFromUi('${escapeUserHtml(inc.zoneKey)}')">Ya está libre</button>
+                </div>
+            `).join('');
+        }
+    }
+}
+
+function renderCityLiveBanner() {
+    const banner = document.getElementById('city-live-banner');
+    const badgeEl = document.getElementById('city-live-banner-badge');
+    const textEl = document.getElementById('city-live-banner-text');
+    if (!banner || !textEl) return;
+
+    const candidate = PulseState.activeNotices.find((n) => n.pinBanner && !PulseState.dismissedBannerIds.has(Number(n.id)));
+    if (!candidate) {
+        banner.style.display = 'none';
+        return;
+    }
+
+    banner.className = `city-live-banner sev-${candidate.severity === 'danger' ? 'danger' : (candidate.severity === 'warning' ? 'warning' : 'info')}`;
+    if (badgeEl) {
+        badgeEl.textContent = candidate.origin === 'auto_comunidad' ? 'BLOQUEO' : 'AVISO';
+    }
+    textEl.textContent = `${candidate.title}: ${candidate.body}`;
+    banner.dataset.noticeId = String(candidate.id);
+    banner.style.display = 'flex';
+}
+
+async function confirmNoticeClearFromUi(noticeId) {
+    try {
+        const res = await Api.clearPulseNotice(noticeId);
+        showToast(res.message || 'Confirmación enviada');
+        await loadLivePulse();
+    } catch (err) {
+        showToast(err.message || 'No se pudo enviar confirmación', 'error');
+    }
+}
+
+async function confirmZoneClearFromUi(zoneKey) {
+    if (!zoneKey) return;
+    try {
+        const res = await Api.clearZoneIncident(zoneKey);
+        showToast(res.message || 'Confirmación enviada');
+        await loadLivePulse();
+    } catch (err) {
+        showToast(err.message || 'No se pudo confirmar despeje', 'error');
+    }
+}
+
+function updateDetailPulseActions(route, routeStops) {
+    const statusEl = document.getElementById('detail-sighting-status');
+    const sightingBtn = document.getElementById('detail-sighting-btn');
+    const shareBtn = document.getElementById('detail-share-btn');
+    if (!route) return;
+
+    const renderStatus = () => {
+        const s = PulseState.sightings[String(route.id)];
+        if (statusEl) {
+            if (s) {
+                const minsText = Number(s.minutesAgo) <= 0 ? 'menos de 1 min' : `${Number(s.minutesAgo)} min`;
+                const stopPart = s.stopName ? ` cerca de ${s.stopName}` : '';
+                statusEl.innerHTML = `<span class="pulse-live-dot-inline"></span> Visto hace ${escapeUserHtml(minsText)}${escapeUserHtml(stopPart)}`;
+            } else {
+                statusEl.textContent = '¿Acabas de ver este camión? Avísale a otros pasajeros';
+            }
+        }
+    };
+    renderStatus();
+
+    if (sightingBtn) {
+        sightingBtn.disabled = false;
+        sightingBtn.onclick = async () => {
+            sightingBtn.disabled = true;
+            try {
+                let nearStop = '';
+                if (window.currentSearchLocation && Array.isArray(routeStops) && routeStops.length > 0) {
+                    let bestD = Infinity;
+                    routeStops.forEach((rs) => {
+                        if (!rs.stop) return;
+                        const d = calculateDistanceMeters(
+                            window.currentSearchLocation.lat, window.currentSearchLocation.lng,
+                            rs.stop.latitude, rs.stop.longitude
+                        );
+                        if (d < bestD) { bestD = d; nearStop = rs.stop.name; }
+                    });
+                }
+                const res = await Api.postBusSighting(route.id, route.name, 'IDA', nearStop);
+                if (res && res.summary) {
+                    PulseState.sightings[String(route.id)] = res.summary;
+                }
+                showToast(res.message || '¡Aviso publicado por 15 min!');
+                renderStatus();
+                loadLivePulse();
+            } catch (err) {
+                showToast(err.message || 'Espera un momento antes de reportar otra vez', 'error');
+            } finally {
+                setTimeout(() => { sightingBtn.disabled = false; }, 3000);
+            }
+        };
+    }
+
+    if (shareBtn) {
+        shareBtn.onclick = () => shareSingleRoute(route);
+    }
+}
+
+function initCommunityPulse() {
+    loadLivePulse();
+    if (PulseState.pollTimer) clearInterval(PulseState.pollTimer);
+    PulseState.pollTimer = setInterval(() => loadLivePulse(), 45000);
+
+    const toggleFormBtn = document.getElementById('toggle-pulse-incident-form');
+    const incForm = document.getElementById('pulse-incident-form');
+    const zoneSel = document.getElementById('pulse-inc-zone');
+    const customZoneIn = document.getElementById('pulse-inc-custom-zone');
+
+    if (toggleFormBtn && incForm) {
+        toggleFormBtn.addEventListener('click', () => {
+            const visible = incForm.style.display === 'flex';
+            incForm.style.display = visible ? 'none' : 'flex';
+            toggleFormBtn.textContent = visible ? '+ Reportar ahora' : 'Cerrar';
+        });
+    }
+    if (zoneSel && customZoneIn) {
+        zoneSel.addEventListener('change', () => {
+            customZoneIn.style.display = zoneSel.value === 'custom' ? 'block' : 'none';
+        });
+    }
+    if (incForm) {
+        incForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const type = document.getElementById('pulse-inc-type')?.value || 'bloqueo';
+            const zoneVal = zoneSel?.value || 'malecon';
+            const customLabel = customZoneIn?.value.trim() || '';
+            const desc = document.getElementById('pulse-inc-desc')?.value.trim() || '';
+
+            const preset = ZONE_CENTER_PRESETS[zoneVal];
+            const zoneKey = zoneVal === 'custom' ? customLabel : zoneVal;
+            const zoneLabel = zoneVal === 'custom' ? customLabel : (preset ? preset.label : zoneVal);
+            if (!zoneKey) {
+                showToast('Escribe la calle o colonia afectada.', 'error');
+                return;
+            }
+            const center = (mapInstance && typeof mapInstance.getCenter === 'function') ? mapInstance.getCenter() : null;
+            const lat = preset ? preset.lat : (center ? center.lat : null);
+            const lng = preset ? preset.lng : (center ? center.lng : null);
+
+            try {
+                const res = await Api.postPulseIncident({
+                    type, zoneKey, zoneLabel, description: desc, latitude: lat, longitude: lng
+                });
+                showToast(res.message || 'Reporte enviado');
+                if (document.getElementById('pulse-inc-desc')) document.getElementById('pulse-inc-desc').value = '';
+                incForm.style.display = 'none';
+                if (toggleFormBtn) toggleFormBtn.textContent = '+ Reportar ahora';
+                await loadLivePulse();
+            } catch (err) {
+                showToast(err.message || 'No se pudo enviar el reporte', 'error');
+            }
+        });
+    }
+
+    const bannerClose = document.getElementById('city-live-banner-close');
+    const bannerMore = document.getElementById('city-live-banner-more');
+    const banner = document.getElementById('city-live-banner');
+    if (bannerClose && banner) {
+        bannerClose.addEventListener('click', () => {
+            const nid = Number(banner.dataset.noticeId);
+            if (nid) PulseState.dismissedBannerIds.add(nid);
+            banner.style.display = 'none';
+        });
+    }
+    if (bannerMore) {
+        bannerMore.addEventListener('click', () => {
+            const nm = document.getElementById('notifications-modal');
+            if (nm) nm.style.display = 'flex';
+        });
+    }
+}
+
+// ----------------------------------------------------------
+// MODO TURISTA CURADO, ATAJOS, AHORRO Y COMPARTIR WHATSAPP
+// ----------------------------------------------------------
+const CURATED_TOURIST_GUIDES = [
+    {
+        title: 'Centro Histórico → Zona Dorada',
+        badge: 'Ahorras ~$120 vs app/taxi',
+        fare: '$13 MXN',
+        tip: 'Sube por Av. Ejército Mexicano o Malecón (Sábalo Centro / Cerritos). Bájate frente a Plaza Laguna o Las Flores.',
+        from: { lat: 23.2041, lng: -106.4218, name: 'Centro / Mercado Pino Suárez' },
+        to: { lat: 23.2555, lng: -106.4581, name: 'Zona Dorada' }
+    },
+    {
+        title: 'Terminal de Cruceros → Malecón / Acuario',
+        badge: 'Ahorras ~$140 vs taxi puerto',
+        fare: '$13 MXN',
+        tip: 'Camina hacia Av. Gabriel Leyva / Miguel Alemán afuera del puerto y toma ruta al Norte hacia Av. Del Mar.',
+        from: { lat: 23.1920, lng: -106.4160, name: 'Terminal de Cruceros' },
+        to: { lat: 23.2279, lng: -106.4275, name: 'Gran Acuario Mazatlán' }
+    },
+    {
+        title: 'Zona Dorada → El Faro Mazatlán',
+        badge: 'Ahorras ~$130 vs taxi',
+        fare: '$13 MXN',
+        tip: 'Toma Sábalo Centro hacia el Sur por toda la bahía; bájate en la glorieta de Olas Altas / Escollera y camina 6 min.',
+        from: { lat: 23.2555, lng: -106.4581, name: 'Zona Dorada' },
+        to: { lat: 23.1825, lng: -106.4282, name: 'El Faro Mazatlán' }
+    },
+    {
+        title: 'Central Camionera → Zona Dorada',
+        badge: 'Ahorras ~$110 vs taxi central',
+        fare: '$13 MXN',
+        tip: 'Sal a Av. Ejército Mexicano (a 2 cuadras); casi todas las rutas al Norte cruzan Rafael Buelna y Zona Dorada.',
+        from: { lat: 23.2194, lng: -106.4158, name: 'Central Camionera' },
+        to: { lat: 23.2555, lng: -106.4581, name: 'Zona Dorada' }
+    },
+    {
+        title: 'Centro → Playas de Cerritos',
+        badge: 'Ahorras ~$170 vs app/taxi',
+        fare: '$13 MXN',
+        tip: 'Busca camiones con letrero "Sábalo Cerritos" o "Cerritos Juárez"; te llevan directo hasta la zona norte de hoteles.',
+        from: { lat: 23.2041, lng: -106.4218, name: 'Centro Mazatlán' },
+        to: { lat: 23.2980, lng: -106.4840, name: 'Playa Cerritos' }
+    }
+];
+
+function renderTouristGuidesList() {
+    const list = document.getElementById('route-list');
+    if (!list) return;
+    list.innerHTML = `
+        <div class="guides-intro-banner">
+            <strong>Modo Turista en Camión</strong>
+            <span>Guías rápidas para moverte por Mazatlán pagando $13 MXN sin pagar de más en traslados cortos.</span>
+        </div>
+    `;
+    CURATED_TOURIST_GUIDES.forEach((g, idx) => {
+        const card = document.createElement('div');
+        card.className = 'guide-card';
+        card.innerHTML = `
+            <div class="guide-card-top">
+                <span class="guide-fare-pill">${escapeUserHtml(g.fare)}</span>
+                <span class="guide-save-pill">${escapeUserHtml(g.badge)}</span>
+            </div>
+            <h4 class="guide-title">${escapeUserHtml(g.title)}</h4>
+            <p class="guide-tip">${escapeUserHtml(g.tip)}</p>
+            <button type="button" class="btn-guide-launch" onclick="launchCuratedGuide(${idx})">Ver qué camión tomar en el mapa</button>
+        `;
+        list.appendChild(card);
+    });
+}
+
+function launchCuratedGuide(idx) {
+    const g = CURATED_TOURIST_GUIDES[idx];
+    if (!g) return;
+    switchSidebarMode('planificador');
+    selectedOrigin = { lat: g.from.lat, lng: g.from.lng, name: g.from.name };
+    selectedDestination = { lat: g.to.lat, lng: g.to.lng, name: g.to.name };
+    const oIn = document.getElementById('origin-input');
+    const dIn = document.getElementById('destination-input');
+    if (oIn) oIn.value = g.from.name;
+    if (dIn) dIn.value = g.to.name;
+    calculateTripRoute();
+    if (isMobileViewport()) setMobileSheetState('half');
+}
+window.launchCuratedGuide = launchCuratedGuide;
+
+const SHORTCUTS_STORAGE_KEY = 'donrutero_user_shortcuts_v1';
+const SHORTCUT_DEFS = [
+    {
+        key: 'casa',
+        label: 'Casa',
+        svg: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"></path><path d="M5 9.5V20h14V9.5"></path></svg>'
+    },
+    {
+        key: 'chamba',
+        label: 'Chamba',
+        svg: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"></rect><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>'
+    },
+    {
+        key: 'escuela',
+        label: 'Escuela',
+        svg: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10l-10-5-10 5 10 5 10-5z"></path><path d="M6 12v5c3 3 9 3 12 0v-5"></path></svg>'
+    }
+];
+
+function getSavedShortcuts() {
+    try {
+        const raw = localStorage.getItem(SHORTCUTS_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function saveShortcutsMap(obj) {
+    try { localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(obj)); } catch (_) {}
+}
+
+function renderPlannerShortcuts() {
+    const row = document.getElementById('planner-shortcuts-row');
+    if (!row) return;
+    const saved = getSavedShortcuts();
+    row.innerHTML = SHORTCUT_DEFS.map((s) => {
+        const item = saved[s.key];
+        if (item && item.lat && item.lng) {
+            return `
+                <div class="shortcut-chip-wrap">
+                    <button type="button" class="shortcut-chip is-saved" onclick="usePlannerShortcut('${s.key}')" title="Ir a ${escapeUserHtml(item.name)}">
+                        ${s.svg} ${escapeUserHtml(s.label)}
+                    </button>
+                    <button type="button" class="shortcut-clear-btn" onclick="clearPlannerShortcut('${s.key}')" title="Borrar atajo ${escapeUserHtml(s.label)}">&times;</button>
+                </div>
+            `;
+        }
+        return `
+            <button type="button" class="shortcut-chip" onclick="saveCurrentAsShortcut('${s.key}')" title="Elige un destino abajo y tócalo para guardarlo como ${escapeUserHtml(s.label)}">
+                ${s.svg} + ${escapeUserHtml(s.label)}
+            </button>
+        `;
+    }).join('');
+}
+
+function saveCurrentAsShortcut(key) {
+    const target = selectedDestination || selectedOrigin;
+    if (!target || !target.lat || !target.lng) {
+        showToast(`Primero elige un Destino en el cuadro de abajo y luego toca "+ ${key}" para guardarlo.`);
+        return;
+    }
+    const saved = getSavedShortcuts();
+    saved[key] = { lat: target.lat, lng: target.lng, name: target.name || key };
+    saveShortcutsMap(saved);
+    renderPlannerShortcuts();
+    showToast(`Guardado "${target.name}" como tu atajo de ${key}`);
+}
+
+async function usePlannerShortcut(key) {
+    const saved = getSavedShortcuts();
+    const item = saved[key];
+    if (!item) return;
+    selectedDestination = { lat: item.lat, lng: item.lng, name: item.name };
+    const dIn = document.getElementById('destination-input');
+    if (dIn) dIn.value = item.name;
+
+    if (!selectedOrigin && window.currentSearchLocation) {
+        selectedOrigin = {
+            lat: window.currentSearchLocation.lat,
+            lng: window.currentSearchLocation.lng,
+            name: window.currentSearchLocation.name || 'Mi ubicación'
+        };
+        const oIn = document.getElementById('origin-input');
+        if (oIn) oIn.value = selectedOrigin.name;
+    }
+    if (selectedOrigin && selectedDestination) {
+        calculateTripRoute();
+    } else {
+        showToast(`Destino fijado en ${item.name}. Ahora indica tu origen o toca el botón GPS.`);
+    }
+}
+
+function clearPlannerShortcut(key) {
+    const saved = getSavedShortcuts();
+    delete saved[key];
+    saveShortcutsMap(saved);
+    renderPlannerShortcuts();
+}
+
+window.saveCurrentAsShortcut = saveCurrentAsShortcut;
+window.usePlannerShortcut = usePlannerShortcut;
+window.clearPlannerShortcut = clearPlannerShortcut;
+
+function formatTripSavingsHtml(opt) {
+    if (!opt || !opt.busMeters) return '';
+    const km = Math.max(1.5, opt.busMeters / 1000);
+    const estTaxiMxn = Math.round(Math.max(70, Math.min(240, 48 + km * 11)));
+    const busCost = (typeof fareMode !== 'undefined' && fareMode === 'student') ? 3.5 : (opt.type === 'transfer' ? 26 : 13);
+    const saved = Math.max(45, Math.round(estTaxiMxn - busCost));
+    return `<div class="trip-savings-pill">Ahorras ~$${saved} MXN aprox. vs taxi o app en este tramo</div>`;
+}
+
+async function shareTextOrWhatsapp(text, url) {
+    const full = `${text}\n${url}`;
+    if (navigator.share) {
+        try {
+            await navigator.share({ title: 'Don Rutero · Mazatlán', text, url });
+            return;
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+        }
+    }
+    const waUrl = `https://wa.me/?text=${encodeURIComponent(full)}`;
+    window.open(waUrl, '_blank', 'noopener,noreferrer');
+}
+
+function shareSingleRoute(route) {
+    if (!route) return;
+    const shareUrl = `${window.location.origin}/?ruta=${encodeURIComponent(route.id)}`;
+    const text = `Así te vas en el camión ${route.name.trim()} en Mazatlán (Don Rutero):`;
+    shareTextOrWhatsapp(text, shareUrl);
+}
+
+function shareTripOption(idx) {
+    const opt = Array.isArray(window._tripComputedOptions) ? window._tripComputedOptions[idx] : null;
+    if (!opt || !selectedOrigin || !selectedDestination) return;
+    const params = new URLSearchParams({
+        fromLat: String(Number(selectedOrigin.lat).toFixed(5)),
+        fromLng: String(Number(selectedOrigin.lng).toFixed(5)),
+        fromName: selectedOrigin.name || 'Origen',
+        toLat: String(Number(selectedDestination.lat).toFixed(5)),
+        toLng: String(Number(selectedDestination.lng).toFixed(5)),
+        toName: selectedDestination.name || 'Destino'
+    });
+    const shareUrl = `${window.location.origin}/?${params.toString()}`;
+    const text = opt.type === 'transfer'
+        ? `Cómo llegar en camión (${selectedOrigin.name} -> ${selectedDestination.name}): Toma ${opt.routeA.name.trim()} y transborda a ${opt.routeB.name.trim()}. Checa dónde subir en Don Rutero:`
+        : `Cómo llegar en camión (${selectedOrigin.name} -> ${selectedDestination.name}): Toma el ${opt.routeA.name.trim()} (sube cerca de ${opt.boardLabel || 'tu origen'}). Ve el trazado en Don Rutero:`;
+    shareTextOrWhatsapp(text, shareUrl);
+}
+window.shareTripOption = shareTripOption;
+
+// ----------------------------------------------------------
+// ALARMA DE BAJADA + CÁPSULA FLOTANTE Y SEGUNDO PLANO (VOY A BORDO)
+// ----------------------------------------------------------
+function toggleOnboardAlarm() {
+    onboardState.alarmEnabled = !onboardState.alarmEnabled;
+    const btn = document.getElementById('onboard-alarm-btn');
+    if (btn) {
+        btn.classList.toggle('active', onboardState.alarmEnabled);
+        btn.innerHTML = onboardState.alarmEnabled
+            ? '<img src="assets/icons/ui_campana.svg" alt="" style="width:13px;height:13px;vertical-align:-2px;"> Alarma bajada: ON'
+            : '<img src="assets/icons/ui_campana.svg" alt="" style="width:13px;height:13px;vertical-align:-2px;opacity:0.5;"> Alarma: OFF';
+    }
+    if (onboardState.alarmEnabled && 'Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+    }
+    showToast(onboardState.alarmEnabled ? 'Alarma de bajada activada (~300 m antes)' : 'Alarma de bajada silenciada');
+}
+window.toggleOnboardAlarm = toggleOnboardAlarm;
+
+function playDropoffChime(isFinalStop) {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const notes = isFinalStop ? [587.33, 783.99, 987.77] : [523.25, 659.25];
+        notes.forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.14);
+            gain.gain.setValueAtTime(0.001, ctx.currentTime + i * 0.14);
+            gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + i * 0.14 + 0.03);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.14 + 0.24);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(ctx.currentTime + i * 0.14);
+            osc.stop(ctx.currentTime + i * 0.14 + 0.26);
+        });
+        setTimeout(() => ctx.close().catch(() => {}), 1200);
+    } catch (_) {}
+}
+
+let _onboardSwRegPromise = null;
+function ensureOnboardServiceWorker() {
+    if (!('serviceWorker' in navigator)) return Promise.resolve(null);
+    const isSecureOrigin = window.location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    if (!isSecureOrigin) return Promise.resolve(null);
+    if (!_onboardSwRegPromise) {
+        _onboardSwRegPromise = navigator.serviceWorker.register('sw.js')
+            .then(() => navigator.serviceWorker.ready)
+            .catch(() => null);
+    }
+    return _onboardSwRegPromise;
+}
+
+async function syncOnboardSystemNotification(forceUrgent = false) {
+    if (!onboardState.active || !('Notification' in window) || Notification.permission !== 'granted') return;
+    const now = Date.now();
+    if (!forceUrgent && (now - onboardState.lastNotifSyncMs) < 8000) return;
+    onboardState.lastNotifSyncMs = now;
+
+    const routeName = document.getElementById('onboard-route-name')?.textContent || 'En ruta';
+    const nextStop = document.getElementById('onboard-next-stop')?.textContent || 'Siguiendo viaje';
+    const alightInfo = document.getElementById('onboard-alight-info')?.textContent || '';
+
+    try {
+        const reg = await ensureOnboardServiceWorker();
+        if (reg && typeof reg.showNotification === 'function') {
+            await reg.showNotification(`Don Rutero · ${routeName}`, {
+                body: `${nextStop}${alightInfo ? `\n${alightInfo}` : ''}`,
+                icon: 'assets/icon-192.png',
+                badge: 'assets/icon-192.png',
+                tag: 'donrutero-onboard',
+                renotify: forceUrgent,
+                silent: !forceUrgent,
+                actions: [{ action: 'stop-onboard', title: 'Finalizar' }]
+            });
+        } else {
+            new Notification(`Don Rutero · ${routeName}`, {
+                body: `${nextStop}${alightInfo ? ` · ${alightInfo}` : ''}`,
+                icon: 'assets/icon-192.png',
+                tag: 'donrutero-onboard',
+                silent: !forceUrgent
+            });
+        }
+    } catch (_) {}
+
+    if ('mediaSession' in navigator) {
+        try {
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: nextStop,
+                artist: `Don Rutero · ${routeName}`,
+                album: alightInfo || 'Voy a bordo',
+                artwork: [{ src: 'assets/icon-192.png', sizes: '192x192', type: 'image/png' }]
+            });
+        } catch (_) {}
+    }
+}
+
+function updateBgNotifButtonUi() {
+    const btn = document.getElementById('onboard-bg-notif-btn');
+    if (!btn) return;
+    btn.classList.toggle('active', onboardState.bgNotifEnabled);
+    btn.innerHTML = onboardState.bgNotifEnabled
+        ? '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg> En barra: ON'
+        : '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg> Avisar en barra: OFF';
+}
+
+async function toggleOnboardBackgroundNotification() {
+    if (!onboardState.active) return;
+    if (!('Notification' in window)) {
+        showToast('Tu navegador no admite notificaciones del sistema en esta conexión.', 'error');
+        return;
+    }
+
+    if (onboardState.bgNotifEnabled) {
+        onboardState.bgNotifEnabled = false;
+        closeOnboardSystemNotification();
+        updateBgNotifButtonUi();
+        showToast('Notificación en barra desactivada');
+        return;
+    }
+
+    let perm = Notification.permission;
+    if (perm === 'default') {
+        try { perm = await Notification.requestPermission(); } catch (_) {}
+    }
+    if (perm !== 'granted') {
+        showToast('Activa los permisos de notificación (requiere HTTPS o localhost).', 'error');
+        return;
+    }
+
+    onboardState.bgNotifEnabled = true;
+    onboardState.lastNotifSyncMs = 0;
+    updateBgNotifButtonUi();
+    await syncOnboardSystemNotification(false);
+    showToast('Notificación en vivo activada en tu barra del sistema');
+}
+window.toggleOnboardBackgroundNotification = toggleOnboardBackgroundNotification;
+
+function setupOnboardBackgroundListeners() {
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && onboardState.active && (onboardState.bgNotifEnabled || Notification.permission === 'granted')) {
+            syncOnboardSystemNotification(false);
+        }
+    });
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'STOP_ONBOARD') {
+                stopOnboardTrip();
+            }
+        });
+    }
+}
+
+function closeOnboardSystemNotification() {
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then((reg) => reg.getNotifications({ tag: 'donrutero-onboard' }))
+            .then((list) => list.forEach((n) => n.close()))
+            .catch(() => {});
+    }
+}
+
+window.confirmNoticeClearFromUi = confirmNoticeClearFromUi;
+window.confirmZoneClearFromUi = confirmZoneClearFromUi;
 
 

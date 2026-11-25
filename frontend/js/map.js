@@ -29,10 +29,18 @@ function safeMapColor(color, fallback = '#475569') {
 function initLeafletMap(containerId) {
     if (mapInstance) return mapInstance;
 
-    // Crear mapa centrado en Mazatlán (preferCanvas acelera polilíneas al arrastrar/hacer zoom)
+    // Crear mapa centrado en Mazatlán (preferCanvas + opciones de rueda/inercia para zoom/paneo a 60 FPS)
     mapInstance = L.map(containerId, {
         preferCanvas: true,
-        zoomControl: false // Quitamos control de zoom por defecto para posicionarlo a la derecha
+        zoomControl: false,
+        wheelPxPerZoomLevel: 75,
+        wheelDebounceTime: 25,
+        inertia: true,
+        inertiaDeceleration: 2400,
+        inertiaMaxSpeed: 1800,
+        fadeAnimation: true,
+        zoomAnimation: true,
+        markerZoomAnimation: true
     });
     
     mapInstance.setView(MAP_CENTER, DEFAULT_ZOOM);
@@ -40,11 +48,14 @@ function initLeafletMap(containerId) {
     // Añadir control de zoom en la esquina superior izquierda
     L.control.zoom({ position: 'topleft' }).addTo(mapInstance);
 
-    // Cargar capa base de OpenStreetMap (gratuita y sin API Key)
+    // Capa base OpenStreetMap optimizada (keepBuffer evita recargas al panear; updateWhenZooming evita micro-tirones al hacer zoom)
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxNativeZoom: 19,
-        maxZoom: 20
+        maxZoom: 20,
+        keepBuffer: 4,
+        updateWhenZooming: false,
+        updateWhenIdle: true
     }).addTo(mapInstance);
 
     return mapInstance;
@@ -182,10 +193,23 @@ function drawRouteArrows(latLngs, color = '#6366f1') {
         }
     };
 
-    mapInstance.on('zoomend moveend', syncVisibleArrows);
+    let arrowRaf = 0;
+    const scheduleSyncVisibleArrows = () => {
+        if (arrowRaf) return;
+        arrowRaf = requestAnimationFrame(() => {
+            arrowRaf = 0;
+            syncVisibleArrows();
+        });
+    };
+
+    mapInstance.on('zoomend moveend', scheduleSyncVisibleArrows);
     arrowGroup.on('remove', () => {
+        if (arrowRaf) {
+            cancelAnimationFrame(arrowRaf);
+            arrowRaf = 0;
+        }
         if (mapInstance) {
-            mapInstance.off('zoomend moveend', syncVisibleArrows);
+            mapInstance.off('zoomend moveend', scheduleSyncVisibleArrows);
         }
     });
 
@@ -228,7 +252,8 @@ function drawRouteLine(coordinates, color = '#6366f1', options = {}) {
         color: color,
         weight,
         opacity,
-        lineJoin: 'round'
+        lineJoin: 'round',
+        smoothFactor: 1.4
     };
     if (dashArray) polyOpts.dashArray = dashArray;
 
@@ -530,15 +555,15 @@ function getOrResetPhysicalStopsLayer() {
     if (typeof L.markerClusterGroup === 'function') {
         if (!allStopsClusterGroup) {
             allStopsClusterGroup = L.markerClusterGroup({
-                maxClusterRadius: 52,
-                disableClusteringAtZoom: 17,
                 maxClusterRadius: 46,
                 disableClusteringAtZoom: 16,
                 spiderfyOnMaxZoom: true,
                 showCoverageOnHover: false,
-                animate: false,
                 animate: true,
+                animateAddingMarkers: false,
                 chunkedLoading: true,
+                chunkInterval: 60,
+                chunkDelay: 16,
                 removeOutsideVisibleBounds: true,
                 iconCreateFunction: (cluster) => {
                     const count = cluster.getChildCount();
@@ -558,7 +583,26 @@ function getOrResetPhysicalStopsLayer() {
     return mapInstance;
 }
 
-// Carga y dibuja todas las paradas físicas del sistema (con clustering + iconos SVG por categoría)
+const physicalStopIconCache = new Map();
+
+function getCachedPhysicalStopIcon(config) {
+    const cacheKey = `${config.bgColor}|${config.iconKey}`;
+    let icon = physicalStopIconCache.get(cacheKey);
+    if (!icon) {
+        icon = L.divIcon({
+            className: 'physical-stop-marker',
+            html: `<div style="background-color: ${config.bgColor}; border: 2px solid #ffffff; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                     ${renderStopCategorySvg(config.iconKey, 12)}
+                   </div>`,
+            iconSize: [22, 22],
+            iconAnchor: [11, 11]
+        });
+        physicalStopIconCache.set(cacheKey, icon);
+    }
+    return icon;
+}
+
+// Carga y dibuja todas las paradas físicas del sistema (con clustering + iconos SVG cacheados + popups perezosos)
 async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
     try {
         const targetLayer = getOrResetPhysicalStopsLayer();
@@ -571,26 +615,20 @@ async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
 
         allPhysicalStopsList.forEach(stop => {
             const config = getStopIconConfig(stop.name, stop.type);
+            const cachedIcon = getCachedPhysicalStopIcon(config);
 
-            const defaultIcon = L.divIcon({
-                className: 'physical-stop-marker',
-                html: `<div style="background-color: ${config.bgColor}; border: 2px solid #ffffff; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                         ${renderStopCategorySvg(config.iconKey, 12)}
-                       </div>`,
-                iconSize: [22, 22],
-                iconAnchor: [11, 11]
-            });
-
-            const marker = L.marker([stop.latitude, stop.longitude], { icon: defaultIcon })
-                .bindPopup(`
-                    <div style="font-family: 'Inter', sans-serif; padding: 2px; min-width: 180px;">
-                        <span style="font-size: 0.68rem; background: ${safeMapColor(config.bgColor)}15; color: ${safeMapColor(config.bgColor)}; padding: 2px 7px; border-radius: 9999px; font-weight: 700; text-transform: uppercase; display: inline-block; margin-bottom: 5px;">${escapeMapHtml(config.category)}</span>
-                        <h4 style="margin: 0 0 4px 0; color: #0f172a; font-size: 0.9rem; font-weight: 700; line-height: 1.3;">${escapeMapHtml(stop.name)}</h4>
-                        <p style="margin: 0 0 4px 0; color: #475569; font-size: 0.78rem;">${escapeMapHtml(stop.address || 'Mazatlán, Sinaloa')}</p>
-                        <p style="margin: 0; color: #64748b; font-size: 0.72rem;">${stop.latitude.toFixed(4)}, ${stop.longitude.toFixed(4)}</p>
-                        <button type="button" onclick="openQrModalForStop(${Number(stop.id)})" class="popup-qr-btn">Ver QR de paradero</button>
-                    </div>
-                `);
+            const marker = L.marker([stop.latitude, stop.longitude], {
+                icon: cachedIcon,
+                alt: stop.name
+            }).bindPopup(() => `
+                <div style="font-family: 'Inter', sans-serif; padding: 2px; min-width: 180px;">
+                    <span style="font-size: 0.68rem; background: ${safeMapColor(config.bgColor)}15; color: ${safeMapColor(config.bgColor)}; padding: 2px 7px; border-radius: 9999px; font-weight: 700; text-transform: uppercase; display: inline-block; margin-bottom: 5px;">${escapeMapHtml(config.category)}</span>
+                    <h4 style="margin: 0 0 4px 0; color: #0f172a; font-size: 0.9rem; font-weight: 700; line-height: 1.3;">${escapeMapHtml(stop.name)}</h4>
+                    <p style="margin: 0 0 4px 0; color: #475569; font-size: 0.78rem;">${escapeMapHtml(stop.address || 'Mazatlán, Sinaloa')}</p>
+                    <p style="margin: 0; color: #64748b; font-size: 0.72rem;">${stop.latitude.toFixed(4)}, ${stop.longitude.toFixed(4)}</p>
+                    <button type="button" onclick="openQrModalForStop(${Number(stop.id)})" class="popup-qr-btn">Ver QR de paradero</button>
+                </div>
+            `);
 
             allStopsMarkers.push(marker);
             markersToAdd.push(marker);
@@ -608,6 +646,82 @@ async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
 
 let trafficCorridorGroup = null;
 let tomtomTrafficTileLayer = null;
+let pulseIncidentGroup = null;
+
+function getIncidentIconMeta(type) {
+    const alertSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+    const dropSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path></svg>';
+    const banSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>';
+    if (type === 'inundacion') return { svg: dropSvg, color: '#0284C7', label: 'Calle inundada' };
+    if (type === 'desvio') return { svg: alertSvg, color: '#D97706', label: 'Desvío reportado' };
+    if (type === 'sin_servicio') return { svg: banSvg, color: '#DC2626', label: 'Sin paso reportado' };
+    return { svg: alertSvg, color: '#DC2626', label: 'Bloqueo reportado' };
+}
+
+function renderPulseMarkers(pulseData) {
+    if (!mapInstance || typeof L === 'undefined') return;
+    if (!pulseIncidentGroup) {
+        pulseIncidentGroup = L.layerGroup().addTo(mapInstance);
+    } else {
+        pulseIncidentGroup.clearLayers();
+    }
+    if (!pulseData) return;
+
+    const incidents = Array.isArray(pulseData.incidents) ? pulseData.incidents : [];
+    const notices = Array.isArray(pulseData.activeNotices) ? pulseData.activeNotices : [];
+    const drawnCoords = new Set();
+
+    incidents.forEach((inc) => {
+        if (typeof inc.latitude !== 'number' || typeof inc.longitude !== 'number') return;
+        const meta = getIncidentIconMeta(inc.type);
+        const key = `${inc.latitude.toFixed(4)},${inc.longitude.toFixed(4)}`;
+        drawnCoords.add(key);
+        const confirmed = Boolean(inc.escalated);
+        const icon = L.divIcon({
+            className: 'pulse-incident-marker',
+            html: `<div class="pulse-pin-badge ${confirmed ? 'is-confirmed' : ''}" style="--pin-color:${meta.color};color:${confirmed ? '#ffffff' : meta.color};">
+                     ${meta.svg}
+                   </div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15]
+        });
+        const badgeText = confirmed
+            ? `Confirmado (${inc.distinctReporters} reportes)`
+            : `En verificación (${inc.distinctReporters}/${inc.threshold || 3})`;
+        const m = L.marker([inc.latitude, inc.longitude], { icon, zIndexOffset: 1200 }).bindPopup(`
+            <div style="font-family:inherit;min-width:190px;">
+                <span style="display:inline-block;font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:999px;background:${meta.color}18;color:${meta.color};margin-bottom:4px;">${escapeMapHtml(badgeText)}</span>
+                <h4 style="margin:0 0 4px 0;font-size:0.9rem;color:#0F172A;">${escapeMapHtml(meta.label)} · ${escapeMapHtml(inc.zoneLabel || '')}</h4>
+                <p style="margin:0 0 8px 0;font-size:0.78rem;color:#475569;">${escapeMapHtml(inc.description || '')}</p>
+                <button type="button" onclick="confirmZoneClearFromUi('${escapeMapHtml(inc.zoneKey || '')}')" style="width:100%;padding:6px 8px;border:1px solid #10B981;background:#ECFDF5;color:#047857;border-radius:6px;font-weight:700;font-size:0.76rem;cursor:pointer;">Ya está todo bien</button>
+            </div>
+        `);
+        pulseIncidentGroup.addLayer(m);
+    });
+
+    notices.forEach((n) => {
+        if (typeof n.latitude !== 'number' || typeof n.longitude !== 'number') return;
+        const key = `${n.latitude.toFixed(4)},${n.longitude.toFixed(4)}`;
+        if (drawnCoords.has(key)) return;
+        const color = n.severity === 'danger' ? '#DC2626' : (n.severity === 'warning' ? '#D97706' : '#2563EB');
+        const svg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+        const icon = L.divIcon({
+            className: 'pulse-incident-marker',
+            html: `<div class="pulse-pin-badge is-confirmed" style="--pin-color:${color};color:#ffffff;">${svg}</div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15]
+        });
+        const m = L.marker([n.latitude, n.longitude], { icon, zIndexOffset: 1180 }).bindPopup(`
+            <div style="font-family:inherit;min-width:190px;">
+                <h4 style="margin:0 0 4px 0;font-size:0.88rem;color:#0F172A;">${escapeMapHtml(n.title || 'Aviso Don Rutero')}</h4>
+                <p style="margin:0;font-size:0.78rem;color:#475569;">${escapeMapHtml(n.body || '')}</p>
+            </div>
+        `);
+        pulseIncidentGroup.addLayer(m);
+    });
+}
+
+window.renderPulseMarkers = renderPulseMarkers;
 
 function getTrafficLevelColor(level) {
     if (level === 'lento') return '#EF4444';
@@ -670,6 +784,7 @@ function renderTrafficOverlay(trafficData, enabled) {
             opacity: lineOpacity * 0.55,
             lineCap: 'round',
             lineJoin: 'round',
+            smoothFactor: 1.5,
             interactive: false
         });
         const line = L.polyline(corr.points, {
@@ -677,7 +792,8 @@ function renderTrafficOverlay(trafficData, enabled) {
             weight: lineWeight,
             opacity: lineOpacity,
             lineCap: 'round',
-            lineJoin: 'round'
+            lineJoin: 'round',
+            smoothFactor: 1.5
         }).bindTooltip(
             `<strong>${escapeMapHtml(corr.name)}</strong><br>${escapeMapHtml(levelLabel)}${speedText ? ` (${escapeMapHtml(speedText)})` : ''}<br><span style="opacity:0.8;font-size:0.75em;">${escapeMapHtml(srcText)}</span>`,
             { sticky: true }

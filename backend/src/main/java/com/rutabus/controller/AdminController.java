@@ -56,6 +56,9 @@ public class AdminController {
     @Autowired
     private RouteReportRepository routeReportRepository;
 
+    @Autowired
+    private com.rutabus.service.CommunityPulseService communityPulseService;
+
     private static final Set<String> VALID_REPORT_STATUSES = Set.of(
             "pendiente", "en_revision", "resuelto", "descartado"
     );
@@ -480,6 +483,56 @@ public class AdminController {
             routeReportRepository.delete(report);
             return ResponseEntity.ok(Map.of("message", "Reporte eliminado"));
         }).orElse(ResponseEntity.notFound().build());
+    }
+
+    // GESTIÓN DE AVISOS Y NOTIFICACIONES EN VIVO
+
+    @GetMapping("/notices")
+    public List<Map<String, Object>> getAdminNotices() {
+        return communityPulseService.listNoticesForAdmin();
+    }
+
+    @PostMapping("/notices")
+    public ResponseEntity<?> createAdminNotice(@RequestBody(required = false) Map<String, Object> body,
+                                               org.springframework.security.core.Authentication authentication) {
+        if (body == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Cuerpo requerido."));
+        }
+        try {
+            String title = body.get("title") != null ? String.valueOf(body.get("title")) : "";
+            String msg = body.get("body") != null ? String.valueOf(body.get("body")) : "";
+            String severity = body.get("severity") != null ? String.valueOf(body.get("severity")) : "info";
+            String zoneLabel = body.get("zoneLabel") != null ? String.valueOf(body.get("zoneLabel")) : "Mazatlán";
+            boolean pinBanner = Boolean.TRUE.equals(body.get("pinBanner"));
+            Integer durationHours = (body.get("durationHours") instanceof Number n) ? n.intValue() : 24;
+            Double lat = (body.get("latitude") instanceof Number n) ? n.doubleValue() : null;
+            Double lng = (body.get("longitude") instanceof Number n) ? n.doubleValue() : null;
+            String adminUser = authentication != null ? authentication.getName() : "admin";
+
+            return ResponseEntity.status(HttpStatus.CREATED).body(
+                    communityPulseService.createAdminNotice(
+                            title, msg, severity, zoneLabel, pinBanner, durationHours, lat, lng, adminUser
+                    )
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PatchMapping("/notices/{id}/dismiss")
+    public ResponseEntity<?> dismissAdminNotice(@PathVariable Long id) {
+        if (!communityPulseService.dismissNoticeAsAdmin(id)) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(Map.of("message", "Notificación retirada"));
+    }
+
+    @DeleteMapping("/notices/{id}")
+    public ResponseEntity<?> deleteAdminNotice(@PathVariable Long id) {
+        if (!communityPulseService.deleteNoticeAsAdmin(id)) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(Map.of("message", "Notificación eliminada"));
     }
 
     // DTOs para la petición de actualización geométrica

@@ -197,6 +197,54 @@ const Api = {
         } catch (_) {}
     },
 
+    getLivePulse: async () => {
+        const response = await fetch(`${API_BASE_URL}/pulse/live`);
+        if (!response.ok) throw new Error('Error al consultar pulso comunitario');
+        return await response.json();
+    },
+
+    postBusSighting: async (routeId, routeName, direction, stopName) => {
+        const response = await fetch(`${API_BASE_URL}/pulse/sightings`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ routeId, routeName, direction, stopName })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || data.message || 'No se pudo registrar avistamiento');
+        return data;
+    },
+
+    postPulseIncident: async (incidentData) => {
+        const response = await fetch(`${API_BASE_URL}/pulse/incidents`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(incidentData)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'No se pudo registrar el bloqueo');
+        return data;
+    },
+
+    clearZoneIncident: async (zoneKey) => {
+        const response = await fetch(`${API_BASE_URL}/pulse/incidents/${encodeURIComponent(zoneKey)}/clear`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'No se pudo confirmar despeje');
+        return data;
+    },
+
+    clearPulseNotice: async (noticeId) => {
+        const response = await fetch(`${API_BASE_URL}/pulse/notices/${Number(noticeId)}/clear`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'No se pudo actualizar el aviso');
+        return data;
+    },
+
     // -----------------------------------------------------
     // GESTIÓN DE ADMINISTRACIÓN (PROTEGIDAS)
     // -----------------------------------------------------
@@ -348,6 +396,43 @@ const Api = {
             headers: getAuthHeaders()
         });
         await handleAdminError(response, 'Error al eliminar el reporte');
+        return await response.json();
+    },
+
+    getAdminNotices: async () => {
+        const response = await fetch(`${API_BASE_URL}/admin/notices`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al cargar avisos');
+        return await response.json();
+    },
+
+    createAdminNotice: async (noticeData) => {
+        const response = await fetch(`${API_BASE_URL}/admin/notices`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(noticeData)
+        });
+        await handleAdminError(response, 'Error al publicar aviso');
+        return await response.json();
+    },
+
+    dismissAdminNotice: async (id) => {
+        const response = await fetch(`${API_BASE_URL}/admin/notices/${id}/dismiss`, {
+            method: 'PATCH',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al retirar el aviso');
+        return await response.json();
+    },
+
+    deleteAdminNotice: async (id) => {
+        const response = await fetch(`${API_BASE_URL}/admin/notices/${id}`, {
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        await handleAdminError(response, 'Error al eliminar el aviso');
         return await response.json();
     }
 };

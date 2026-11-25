@@ -114,12 +114,15 @@
                         </button>
                     </div>
 
-                    <!-- Selector de Pestañas: Rutas / Paradas / Reportes -->
+                    <!-- Selector de Pestañas: Rutas / Paradas / Reportes / Avisos -->
                     <div class="sidebar-mode-switcher">
                         <button type="button" id="admin-tab-routes" class="mode-tab-btn active">Rutas</button>
                         <button type="button" id="admin-tab-stops" class="mode-tab-btn">Paradas</button>
                         <button type="button" id="admin-tab-reports" class="mode-tab-btn">
                             Reportes <span id="admin-reports-badge" class="admin-tab-badge" style="display:none;">0</span>
+                        </button>
+                        <button type="button" id="admin-tab-notices" class="mode-tab-btn">
+                            Avisos <span id="admin-notices-badge" class="admin-tab-badge" style="display:none;">0</span>
                         </button>
                     </div>
 
@@ -158,6 +161,40 @@
                             <button type="button" class="admin-chip" data-report-filter="descartado">Descartados</button>
                         </div>
                         <div id="admin-report-list" class="route-list">
+                            <!-- Se renderiza con JS -->
+                        </div>
+                    </div>
+
+                    <!-- Panel de Avisos Vivos y Alertas Automáticas -->
+                    <div id="admin-notices-panel" style="display: none; flex-direction: column; gap: 10px;">
+                        <form id="admin-notice-form" class="admin-studio-box" style="display:flex; flex-direction:column; gap:8px;">
+                            <div style="font-size:0.78rem; font-weight:700; color:var(--text-primary);">Publicar aviso en vivo en Don Rutero</div>
+                            <input type="text" id="admin-notice-title" class="form-control" maxlength="150" placeholder="Ej. Carnaval: Malecón cerrado desde las 4 PM" required style="font-size:0.78rem; padding:7px 9px;">
+                            <textarea id="admin-notice-body" class="form-control" rows="2" maxlength="550" placeholder="Explica qué rutas se desvían o qué debe considerar el pasajero..." required style="font-size:0.78rem; padding:7px 9px;"></textarea>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                                <input type="text" id="admin-notice-zone" class="form-control" maxlength="140" placeholder="Zona (ej. Malecón)" value="Mazatlán" style="font-size:0.76rem; padding:6px 8px;">
+                                <select id="admin-notice-severity" class="form-control" style="font-size:0.76rem; padding:6px 8px;">
+                                    <option value="info">Informativo (Azul)</option>
+                                    <option value="warning" selected>Precaución / Desvío (Ámbar)</option>
+                                    <option value="danger">Bloqueo / Urgente (Rojo)</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:0.74rem;">
+                                <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer;">
+                                    <input type="checkbox" id="admin-notice-pin" checked> Fijar banner arriba del mapa
+                                </label>
+                                <select id="admin-notice-hours" class="form-control" style="width:105px; font-size:0.74rem; padding:4px 6px;">
+                                    <option value="6">6 horas</option>
+                                    <option value="12">12 horas</option>
+                                    <option value="24" selected>24 horas</option>
+                                    <option value="72">3 días</option>
+                                    <option value="0">Sin expiración</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="btn btn-primary" style="padding:7px 12px; font-size:0.78rem;">Publicar aviso ahora</button>
+                        </form>
+                        <div style="font-size:0.72rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.04em;">Avisos activos y auto-reportados (≥3 ciudadanos)</div>
+                        <div id="admin-notices-list" class="route-list">
                             <!-- Se renderiza con JS -->
                         </div>
                     </div>

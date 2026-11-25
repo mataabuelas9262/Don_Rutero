@@ -6,12 +6,13 @@ let adminRoutes = [];
 let selectedRouteId = null;
 
 // Filtros y pestaña activa del panel admin
-let activeAdminTab = 'routes'; // 'routes' | 'stops' | 'reports'
+let activeAdminTab = 'routes'; // 'routes' | 'stops' | 'reports' | 'notices'
 let routeStatusFilter = 'all'; // 'all' | 'active' | 'inactive'
 let routeSearchText = '';
 let stopStatusFilter = 'all';  // 'all' | 'orphan'
 let stopSearchText = '';
 let adminReportsData = [];
+let adminNoticesData = [];
 let reportStatusFilter = 'all'; // 'all' | 'pendiente' | 'en_revision' | 'resuelto' | 'descartado'
 
 // Estados del mapa en edición
@@ -161,8 +162,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2. Inicializar el mapa de Leaflet
     const map = initLeafletMap('map');
 
-    // 3. Cargar rutas, paradas físicas y reportes ciudadanos (en paralelo)
-    await Promise.all([refreshAdminRoutes(), refreshPhysicalStops(), refreshAdminReports()]);
+    // 3. Cargar rutas, paradas físicas, reportes y avisos (en paralelo)
+    await Promise.all([refreshAdminRoutes(), refreshPhysicalStops(), refreshAdminReports(), refreshAdminNotices()]);
 
     // 4. Configurar eventos del panel
     setupAdminEventListeners(map);
@@ -188,20 +189,101 @@ function updateAdminStats() {
 }
 
 function switchAdminTab(tab) {
-    activeAdminTab = (tab === 'stops' || tab === 'reports') ? tab : 'routes';
+    activeAdminTab = (tab === 'stops' || tab === 'reports' || tab === 'notices') ? tab : 'routes';
     const routesTab = document.getElementById('admin-tab-routes');
     const stopsTab = document.getElementById('admin-tab-stops');
     const reportsTab = document.getElementById('admin-tab-reports');
+    const noticesTab = document.getElementById('admin-tab-notices');
     const routesPanel = document.getElementById('admin-routes-panel');
     const stopsPanel = document.getElementById('admin-stops-panel');
     const reportsPanel = document.getElementById('admin-reports-panel');
+    const noticesPanel = document.getElementById('admin-notices-panel');
 
     if (routesTab) routesTab.classList.toggle('active', activeAdminTab === 'routes');
     if (stopsTab) stopsTab.classList.toggle('active', activeAdminTab === 'stops');
     if (reportsTab) reportsTab.classList.toggle('active', activeAdminTab === 'reports');
+    if (noticesTab) noticesTab.classList.toggle('active', activeAdminTab === 'notices');
     if (routesPanel) routesPanel.style.display = activeAdminTab === 'routes' ? 'flex' : 'none';
     if (stopsPanel) stopsPanel.style.display = activeAdminTab === 'stops' ? 'flex' : 'none';
     if (reportsPanel) reportsPanel.style.display = activeAdminTab === 'reports' ? 'flex' : 'none';
+    if (noticesPanel) noticesPanel.style.display = activeAdminTab === 'notices' ? 'flex' : 'none';
+}
+
+async function refreshAdminNotices() {
+    try {
+        adminNoticesData = await Api.getAdminNotices();
+        if (!Array.isArray(adminNoticesData)) adminNoticesData = [];
+        updateAdminNoticesBadge();
+        renderAdminNotices();
+    } catch (err) {
+        console.warn('No se pudieron cargar avisos:', err.message);
+    }
+}
+
+function updateAdminNoticesBadge() {
+    const badge = document.getElementById('admin-notices-badge');
+    if (!badge) return;
+    const activeCount = adminNoticesData.filter(n => n.active).length;
+    badge.textContent = String(activeCount);
+    badge.style.display = activeCount > 0 ? 'inline-flex' : 'none';
+}
+
+function renderAdminNotices() {
+    const container = document.getElementById('admin-notices-list');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (adminNoticesData.length === 0) {
+        container.innerHTML = '<div style="padding:16px 12px;text-align:center;color:var(--text-muted);font-size:0.82rem;">Sin avisos activos ni históricos todavía.</div>';
+        return;
+    }
+
+    adminNoticesData.forEach(n => {
+        const isAuto = n.origin === 'auto_comunidad';
+        const sevLabel = n.severity === 'danger' ? 'Urgente' : n.severity === 'warning' ? 'Precaución' : 'Info';
+        const sevCls = n.severity === 'danger' ? 'status-descartado' : n.severity === 'warning' ? 'status-pendiente' : 'status-revision';
+        const card = document.createElement('div');
+        card.className = 'admin-report-card';
+        card.style.opacity = n.active ? '1' : '0.62';
+        card.innerHTML = `
+            <div class="admin-report-head">
+                <span class="admin-report-type">${isAuto ? 'Comunidad (≥3)' : 'Admin Oficial'} · ${escapeAdminHtml(sevLabel)}</span>
+                <span class="admin-report-status ${n.active ? sevCls : 'status-resuelto'}">${n.active ? 'Activo' : 'Retirado'}</span>
+            </div>
+            <div class="admin-report-title">${escapeAdminHtml(n.title)}</div>
+            <div class="admin-report-desc">${escapeAdminHtml(n.body)}</div>
+            <div class="admin-report-meta">
+                <span>Zona: ${escapeAdminHtml(n.zoneLabel || 'Mazatlán')}${n.pinBanner ? ' · Banner fijo' : ''}</span>
+                ${isAuto ? `<span>Reportes: ${Number(n.reportCount || 0)} · Despejes: ${Number(n.clearCount || 0)}</span>` : ''}
+            </div>
+            <div class="admin-report-actions">
+                ${n.active ? `<button type="button" class="route-actions-btn" data-notice-action="dismiss" style="color:var(--warning);font-weight:700;">Quitar aviso</button>` : ''}
+                <button type="button" class="route-actions-btn" data-notice-action="delete" style="color:var(--danger);">Eliminar</button>
+            </div>
+        `;
+        const dismissBtn = card.querySelector('[data-notice-action="dismiss"]');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', async () => {
+                try {
+                    await Api.dismissAdminNotice(n.id);
+                    showToast('Aviso retirado de Don Rutero.');
+                    refreshAdminNotices();
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            });
+        }
+        card.querySelector('[data-notice-action="delete"]').addEventListener('click', async () => {
+            try {
+                await Api.deleteAdminNotice(n.id);
+                showToast('Aviso eliminado.');
+                refreshAdminNotices();
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+        container.appendChild(card);
+    });
 }
 
 const REPORT_TYPE_LABELS = {
@@ -2489,12 +2571,47 @@ function setupAdminEventListeners(map) {
     const tabRoutes = document.getElementById('admin-tab-routes');
     const tabStops = document.getElementById('admin-tab-stops');
     const tabReports = document.getElementById('admin-tab-reports');
+    const tabNotices = document.getElementById('admin-tab-notices');
     if (tabRoutes) tabRoutes.addEventListener('click', () => switchAdminTab('routes'));
     if (tabStops) tabStops.addEventListener('click', () => switchAdminTab('stops'));
     if (tabReports) {
         tabReports.addEventListener('click', () => {
             switchAdminTab('reports');
             refreshAdminReports();
+        });
+    }
+    if (tabNotices) {
+        tabNotices.addEventListener('click', () => {
+            switchAdminTab('notices');
+            refreshAdminNotices();
+        });
+    }
+    const adminNoticeForm = document.getElementById('admin-notice-form');
+    if (adminNoticeForm) {
+        adminNoticeForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const titleEl = document.getElementById('admin-notice-title');
+            const bodyEl = document.getElementById('admin-notice-body');
+            const zoneEl = document.getElementById('admin-notice-zone');
+            const sevEl = document.getElementById('admin-notice-severity');
+            const pinEl = document.getElementById('admin-notice-pin');
+            const hoursEl = document.getElementById('admin-notice-hours');
+            try {
+                await Api.createAdminNotice({
+                    title: titleEl.value.trim(),
+                    body: bodyEl.value.trim(),
+                    zoneLabel: zoneEl.value.trim() || 'Mazatlán',
+                    severity: sevEl.value,
+                    pinBanner: Boolean(pinEl && pinEl.checked),
+                    durationHours: Number(hoursEl ? hoursEl.value : 24)
+                });
+                titleEl.value = '';
+                bodyEl.value = '';
+                showToast('Aviso en vivo publicado en Don Rutero.');
+                refreshAdminNotices();
+            } catch (err) {
+                showToast(err.message || 'No se pudo publicar aviso', 'error');
+            }
         });
     }
 
