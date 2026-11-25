@@ -271,6 +271,33 @@
             </div>
         </section>
 
+        <!-- ========== FAB TRÁFICO Y LEYENDA ========== -->
+        <button id="fab-traffic" type="button" class="fab-traffic" title="Mostrar u ocultar tráfico en Mazatlán" aria-pressed="false" onclick="toggleTrafficLayer()">
+            <span class="traffic-fab-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="7" y="2" width="10" height="20" rx="4"></rect>
+                    <circle cx="12" cy="7" r="1.4" fill="#EF4444" stroke="none"></circle>
+                    <circle cx="12" cy="12" r="1.4" fill="#F59E0B" stroke="none"></circle>
+                    <circle cx="12" cy="17" r="1.4" fill="#10B981" stroke="none"></circle>
+                </svg>
+            </span>
+            <span class="fab-traffic-label">Tráfico</span>
+            <span id="traffic-status-dot" class="traffic-status-dot level-fluido"></span>
+        </button>
+
+        <div id="traffic-legend" class="traffic-legend" style="display: none;" role="status" aria-live="polite">
+            <div class="traffic-legend-header">
+                <strong id="traffic-legend-period">Flujo en Mazatlán</strong>
+                <span id="traffic-legend-speed" class="traffic-legend-speed"></span>
+            </div>
+            <div class="traffic-legend-scale">
+                <span><i style="background:#10B981;"></i>Fluido</span>
+                <span><i style="background:#F59E0B;"></i>Moderado</span>
+                <span><i style="background:#EF4444;"></i>Lento</span>
+            </div>
+            <div id="traffic-legend-source" class="traffic-legend-source"></div>
+        </div>
+
         <!-- ========== FAB GEOLOCALIZACIÓN ========== -->
         <button id="fab-location" class="fab-location" title="Mi ubicación">
             <img src="assets/icons/ui_ubicacion.svg" alt="Mi ubicación" style="width:22px; height:22px;">

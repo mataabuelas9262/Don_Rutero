@@ -72,9 +72,10 @@ public class SecurityConfig {
                 .requestMatchers("/", "/index.html", "/admin.html", "/css/**", "/js/**", "/assets/**", "/favicon.ico").permitAll()
                 // Cambio de contraseña requiere usuario autenticado
                 .requestMatchers("/api/auth/change-password").authenticated()
-                // Rutas públicas de autenticación y consulta
+                // Rutas públicas de autenticación, catálogo y tráfico
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/routes/**").permitAll()
+                .requestMatchers("/api/traffic/**").permitAll()
                 // Rutas protegidas de administración
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 // Cualquier otra petición debe estar autenticada

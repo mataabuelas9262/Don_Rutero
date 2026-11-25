@@ -2239,9 +2239,11 @@ function findBestTransferPoint(routeA, routeB) {
     return findCandidateTransferPoints(routeA, routeB, 1)[0] || null;
 }
 
-function estimateTripMinutes(walkMeters, busMeters, transferCount = 0) {
+function estimateTripMinutes(walkMeters, busMeters, transferCount = 0, trafficMetrics = null) {
     const walkMin = walkMeters > 0 ? Math.max(1, Math.round(walkMeters / 80)) : 0;
-    const busMin = (busMeters && isFinite(busMeters)) ? Math.max(2, Math.round(busMeters / 365)) : 8;
+    const busKmh = (trafficMetrics && trafficMetrics.effectiveSpeedKmh) ? trafficMetrics.effectiveSpeedKmh : 21.9;
+    const metersPerMin = (busKmh * 1000) / 60;
+    const busMin = (busMeters && isFinite(busMeters)) ? Math.max(2, Math.round(busMeters / metersPerMin)) : 8;
     const transferMin = transferCount * 4;
     return walkMin + busMin + transferMin;
 }
@@ -2312,7 +2314,8 @@ function calculateTripRoute() {
 
                 const dirInfo = getBoardingDirectionInfo(m.route, bestPair.origInfo, selectedOrigin.lat, selectedOrigin.lng, oCands);
                 const totalWalk = bestPair.origInfo.dist + bestPair.destInfo.dist;
-                const estimatedMin = estimateTripMinutes(totalWalk, bestPair.forwardDist, 0);
+                const trafficInfo = computeRouteTrafficMetrics(bestPair.segmentCoords, bestPair.forwardDist);
+                const estimatedMin = estimateTripMinutes(totalWalk, bestPair.forwardDist, 0, trafficInfo);
 
                 return {
                     type: 'direct',
@@ -2322,6 +2325,7 @@ function calculateTripRoute() {
                     travelCoords: bestPair.segmentCoords,
                     onBusDist: bestPair.forwardDist,
                     estimatedMin,
+                    trafficInfo,
                     dirInfo,
                     boardLabel: findNearestStopLabel(m.route, bestPair.origInfo.lat, bestPair.origInfo.lng),
                     alightLabel: findNearestStopLabel(m.route, bestPair.destInfo.lat, bestPair.destInfo.lng),
@@ -2427,7 +2431,9 @@ function calculateTripRoute() {
 
                     const dirInfoA = getBoardingDirectionInfo(candA.route, bestOrigA, selectedOrigin.lat, selectedOrigin.lng, oCandsA);
                     const dirInfoB = getBoardingDirectionInfo(candB.route, transferPtB, transfer.latA, transfer.lngA, []);
-                    const estimatedMin = estimateTripMinutes(totalWalk, totalBusDist > 0 ? totalBusDist : Infinity, 1);
+                    const combinedLegCoords = [...(bestSegA || []), ...(bestSegB || [])];
+                    const trafficInfo = computeRouteTrafficMetrics(combinedLegCoords, totalBusDist);
+                    const estimatedMin = estimateTripMinutes(totalWalk, totalBusDist > 0 ? totalBusDist : Infinity, 1, trafficInfo);
 
                     transferOptions.push({
                         type: 'transfer',
@@ -2439,6 +2445,7 @@ function calculateTripRoute() {
                         travelCoordsB: bestSegB,
                         onBusDist: totalBusDist,
                         estimatedMin,
+                        trafficInfo,
                         dirInfo: dirInfoA,
                         dirInfoB,
                         transfer,
@@ -2462,6 +2469,7 @@ function calculateTripRoute() {
         window._tripComputedOptions = combined;
 
         let html = '';
+        html += formatTripTrafficSummaryHtml();
         if (directWalkDist <= 350) {
             html += `
                 <div class="location-status-banner" style="margin-bottom: 4px;">
@@ -2495,6 +2503,7 @@ function calculateTripRoute() {
             const isBest = idx === 0;
             const timeLabel = opt.estimatedMin ? `~${opt.estimatedMin} min` : '';
             const kmText = (opt.onBusDist && isFinite(opt.onBusDist)) ? `${(opt.onBusDist / 1000).toFixed(1)} km en camión` : '';
+            const trafficBadgeHtml = formatOptionTrafficBadgeHtml(opt.trafficInfo);
             const tripFareHtml = fareMode === 'student'
                 ? `<div class="route-fare-group"><span class="route-fare student-active">$${opt.studentPrice.toFixed(2)}</span><span style="font-size:0.65rem;color:var(--text-muted);">Normal $${opt.normalPrice.toFixed(2)}</span></div>`
                 : `<div class="route-fare-group"><span class="route-fare">$${opt.normalPrice.toFixed(2)}</span><span class="route-fare-student">Est. $${opt.studentPrice.toFixed(2)}</span></div>`;
@@ -2514,6 +2523,7 @@ function calculateTripRoute() {
                                     <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
                                         <span style="background: ${r.color}15; color: ${r.color}; font-weight: 700; font-size: 0.68rem; padding: 2px 7px; border-radius: 9999px; text-transform: uppercase;">${badgeText}</span>
                                         ${timeLabel ? `<span style="font-size: 0.72rem; font-weight: 700; color: var(--text-secondary);">${timeLabel}${kmText ? ` · ${kmText}` : ''}</span>` : ''}
+                                        ${trafficBadgeHtml}
                                     </div>
                                     <h4 style="margin: 4px 0 0 0; font-size: 0.98rem; font-weight: 700; color: var(--text-primary);">${escapeUserHtml(r.name)}</h4>
                                 </div>
@@ -2564,6 +2574,7 @@ function calculateTripRoute() {
                                 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
                                     <span style="background: var(--primary-light); color: var(--primary); font-weight: 700; font-size: 0.68rem; padding: 2px 7px; border-radius: 9999px; text-transform: uppercase;">${badgeText}</span>
                                     ${timeLabel ? `<span style="font-size: 0.72rem; font-weight: 700; color: var(--text-secondary);">${timeLabel}${kmText ? ` · ${kmText}` : ''}</span>` : ''}
+                                    ${trafficBadgeHtml}
                                 </div>
                                 <h4 style="margin: 4px 0 0 0; font-size: 0.92rem; font-weight: 700; color: var(--text-primary); line-height: 1.3;">
                                     <span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:${rA.color}; margin-right:4px;"></span>${escapeUserHtml(rA.name)}
@@ -3855,7 +3866,11 @@ const onboardState = {
     watchId: null,
     busMarker: null,
     notifiedNearLeg: false,
-    notifiedNearEnd: false
+    notifiedNearEnd: false,
+    corridorTrafficSpeedKmh: 22,
+    liveBusSpeedKmh: null,
+    lastGpsFix: null,
+    lastTelemetrySentMs: 0
 };
 
 function normalizeLatLngPoint(p) {
@@ -4024,7 +4039,11 @@ function updateOnboardHudAtDistance(distM) {
 
     const legTargetM = inFirstLeg ? onboardState.legSplitM : total;
     const remainToActionM = Math.max(0, Math.round(legTargetM - distM));
-    const etaMin = Math.max(1, Math.round((remainToActionM / 1000) / 22 * 60));
+    const corridorKmh = onboardState.corridorTrafficSpeedKmh || 22;
+    const effectiveEtaKmh = (onboardState.source === 'gps' && onboardState.liveBusSpeedKmh)
+        ? Math.max(9, Math.min(30, onboardState.liveBusSpeedKmh * 0.5 + corridorKmh * 0.5))
+        : corridorKmh;
+    const etaMin = Math.max(1, Math.round((remainToActionM / 1000) / effectiveEtaKmh * 60));
 
     if (routeBar) routeBar.style.background = pt.routeColor;
     if (routeNameEl) routeNameEl.textContent = pt.routeName;
@@ -4208,8 +4227,44 @@ function startOnboardGpsWatch() {
     onboardState.watchId = navigator.geolocation.watchPosition(
         (pos) => {
             if (!onboardState.active || onboardState.source !== 'gps') return;
-            const { latitude, longitude } = pos.coords;
+            const { latitude, longitude, speed } = pos.coords;
+            const nowMs = Date.now();
             const proj = projectCoordOntoJourney(latitude, longitude);
+
+            let measuredKmh = null;
+            if (typeof speed === 'number' && isFinite(speed) && speed >= 0.6 && speed <= 20) {
+                measuredKmh = speed * 3.6;
+            } else if (onboardState.lastGpsFix) {
+                const dtSec = (nowMs - onboardState.lastGpsFix.tsMs) / 1000;
+                if (dtSec >= 5 && dtSec <= 90) {
+                    const stepM = calculateDistanceMeters(
+                        onboardState.lastGpsFix.lat,
+                        onboardState.lastGpsFix.lng,
+                        latitude,
+                        longitude
+                    );
+                    if (stepM >= 15) {
+                        const calcKmh = (stepM / dtSec) * 3.6;
+                        if (calcKmh >= 2 && calcKmh <= 68) {
+                            measuredKmh = calcKmh;
+                        }
+                    }
+                }
+            }
+            onboardState.lastGpsFix = { lat: latitude, lng: longitude, tsMs: nowMs };
+
+            if (measuredKmh !== null && proj.offsetM <= 85) {
+                const clamped = Math.max(9, Math.min(34, measuredKmh));
+                onboardState.liveBusSpeedKmh = onboardState.liveBusSpeedKmh
+                    ? (onboardState.liveBusSpeedKmh * 0.55 + clamped * 0.45)
+                    : clamped;
+
+                if (nowMs - onboardState.lastTelemetrySentMs >= 25000 && typeof Api.sendTrafficTelemetry === 'function') {
+                    onboardState.lastTelemetrySentMs = nowMs;
+                    Api.sendTrafficTelemetry(latitude, longitude, Math.round(measuredKmh * 10) / 10);
+                }
+            }
+
             onboardState.currentDistM = proj.bestCumM;
             updateOnboardHudAtDistance(onboardState.currentDistM);
             renderOnboardBusMarker(latitude, longitude, '#005C97');
@@ -4251,6 +4306,11 @@ function startOnboardTrip(optionIdx) {
     onboardState.source = initialSource;
     onboardState.notifiedNearLeg = false;
     onboardState.notifiedNearEnd = false;
+    onboardState.corridorTrafficSpeedKmh = (opt.trafficInfo && opt.trafficInfo.effectiveSpeedKmh)
+        ? opt.trafficInfo.effectiveSpeedKmh
+        : 22;
+    onboardState.liveBusSpeedKmh = null;
+    onboardState.lastGpsFix = null;
 
     const hud = document.getElementById('onboard-hud');
     const playBtn = document.getElementById('onboard-play-btn');
@@ -4448,5 +4508,213 @@ function setupDonationListeners() {
 
 window.openDonationModal = openDonationModal;
 
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        initTrafficModule();
+    });
+} else {
+    initTrafficModule();
+}
+
+// ----------------------------------------------------------
+// MÓDULO DE TRÁFICO EN TIEMPO REAL Y AJUSTE DE TIEMPOS
+// ----------------------------------------------------------
+const TrafficState = {
+    enabled: false,
+    data: null,
+    lastFetchMs: 0,
+    refreshTimer: null
+};
+
+async function loadTrafficSummary({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && TrafficState.data && (now - TrafficState.lastFetchMs) < 90000) {
+        return TrafficState.data;
+    }
+    try {
+        if (typeof Api !== 'undefined' && typeof Api.getLiveTraffic === 'function') {
+            const payload = await Api.getLiveTraffic();
+            TrafficState.data = payload;
+            TrafficState.lastFetchMs = Date.now();
+            updateTrafficUiControls();
+            if (TrafficState.enabled && typeof renderTrafficOverlay === 'function') {
+                renderTrafficOverlay(TrafficState.data, true);
+            }
+        }
+    } catch (err) {
+        console.warn('No se pudo obtener estado de tráfico:', err && err.message ? err.message : err);
+    }
+    return TrafficState.data;
+}
+
+function getTrafficSourceHumanLabel(data) {
+    if (!data) return '';
+    if (data.source === 'tomtom_y_gps') return 'TomTom + GPS en vivo Don Rutero';
+    if (data.source === 'tomtom') return 'TomTom Traffic en vivo';
+    if (data.source === 'gps_comunitario') return 'GPS en vivo Don Rutero + horario';
+    return 'Estimación por horario de Mazatlán';
+}
+
+function updateTrafficUiControls() {
+    const btn = document.getElementById('fab-traffic');
+    const dot = document.getElementById('traffic-status-dot');
+    const legend = document.getElementById('traffic-legend');
+    const periodEl = document.getElementById('traffic-legend-period');
+    const speedEl = document.getElementById('traffic-legend-speed');
+    const srcEl = document.getElementById('traffic-legend-source');
+
+    const data = TrafficState.data;
+    const level = (data && data.overallLevel) || 'fluido';
+    if (btn) {
+        btn.classList.toggle('active', TrafficState.enabled);
+        btn.setAttribute('aria-pressed', TrafficState.enabled ? 'true' : 'false');
+    }
+    if (dot) {
+        dot.className = `traffic-status-dot level-${level === 'lento' ? 'lento' : level === 'moderado' ? 'moderado' : 'fluido'}`;
+    }
+    if (legend) {
+        legend.style.display = TrafficState.enabled ? 'block' : 'none';
+        if (TrafficState.enabled && data) {
+            if (periodEl) periodEl.textContent = data.periodLabel || 'Flujo en Mazatlán';
+            if (speedEl) speedEl.textContent = data.avgBusSpeedKmh ? `~${Number(data.avgBusSpeedKmh).toFixed(0)} km/h` : '';
+            if (srcEl) srcEl.textContent = getTrafficSourceHumanLabel(data);
+        }
+    }
+}
+
+async function toggleTrafficLayer() {
+    TrafficState.enabled = !TrafficState.enabled;
+    if (TrafficState.enabled) {
+        await loadTrafficSummary({ force: !TrafficState.data });
+    }
+    updateTrafficUiControls();
+    if (typeof renderTrafficOverlay === 'function') {
+        renderTrafficOverlay(TrafficState.data, TrafficState.enabled);
+    }
+    if (TrafficState.enabled && TrafficState.data) {
+        showToast(`${TrafficState.data.periodLabel || 'Tráfico'} · ${getTrafficSourceHumanLabel(TrafficState.data)}`);
+    }
+}
+
+function computeRouteTrafficMetrics(travelCoords, busMeters) {
+    const baseBusKmh = 21.9;
+    const data = TrafficState.data;
+    if (!data || !Array.isArray(data.corridors) || data.corridors.length === 0) {
+        return { effectiveSpeedKmh: baseBusKmh, delayMin: 0, level: 'fluido' };
+    }
+
+    const coords = Array.isArray(travelCoords) ? travelCoords : [];
+    const corridors = data.corridors;
+    const cells = Array.isArray(data.communityCells) ? data.communityCells : [];
+
+    let weightedSpeedSum = 0;
+    let weightedFreeSum = 0;
+    let matchedSamples = 0;
+
+    if (coords.length > 0) {
+        const step = Math.max(1, Math.floor(coords.length / 26));
+        for (let i = 0; i < coords.length; i += step) {
+            const p = coords[i];
+            if (!p || typeof p.latitude !== 'number' || typeof p.longitude !== 'number') continue;
+
+            let bestCorr = null;
+            let bestDist = Infinity;
+            for (const c of corridors) {
+                if (!Array.isArray(c.points)) continue;
+                for (const cp of c.points) {
+                    const d = calculateDistanceMeters(p.latitude, p.longitude, cp[0], cp[1]);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestCorr = c;
+                    }
+                }
+            }
+            if (bestCorr && bestDist <= 750) {
+                weightedSpeedSum += Number(bestCorr.speedKmh) || baseBusKmh;
+                weightedFreeSum += Number(bestCorr.freeFlowBusKmh) || 24;
+                matchedSamples++;
+            } else {
+                for (const cell of cells) {
+                    if (calculateDistanceMeters(p.latitude, p.longitude, cell.lat, cell.lng) <= 500) {
+                        weightedSpeedSum += Number(cell.speedKmh) || baseBusKmh;
+                        weightedFreeSum += 23;
+                        matchedSamples++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let effectiveKmh;
+    let freeKmh;
+    if (matchedSamples > 0) {
+        const matchedAvg = weightedSpeedSum / matchedSamples;
+        const matchedFree = weightedFreeSum / matchedSamples;
+        // Mezcla con velocidad urbana base si solo un tramo corto coincidió con corredor
+        const coverage = Math.min(1, matchedSamples / 5);
+        effectiveKmh = matchedAvg * coverage + (Number(data.avgBusSpeedKmh) || baseBusKmh) * (1 - coverage);
+        freeKmh = matchedFree * coverage + 23.5 * (1 - coverage);
+    } else {
+        effectiveKmh = (Number(data.avgBusSpeedKmh) || baseBusKmh) * 0.55 + baseBusKmh * 0.45;
+        freeKmh = 23.0;
+    }
+
+    effectiveKmh = Math.max(9.0, Math.min(26.0, Math.round(effectiveKmh * 10) / 10));
+    let delayMin = 0;
+    if (busMeters && isFinite(busMeters) && busMeters > 200) {
+        const freeMin = (busMeters / 1000) / Math.max(18, freeKmh) * 60;
+        const currMin = (busMeters / 1000) / effectiveKmh * 60;
+        delayMin = Math.max(0, Math.round(currMin - freeMin));
+    }
+
+    const level = (effectiveKmh < 14.5 || delayMin >= 5) ? 'lento'
+        : (effectiveKmh < 18.5 || delayMin >= 2) ? 'moderado'
+        : 'fluido';
+
+    return { effectiveSpeedKmh: effectiveKmh, delayMin, level };
+}
+
+function formatTripTrafficSummaryHtml() {
+    const data = TrafficState.data;
+    if (!data) return '';
+    const dotColor = data.overallLevel === 'lento' ? '#EF4444'
+        : data.overallLevel === 'moderado' ? '#F59E0B' : '#10B981';
+    const srcText = getTrafficSourceHumanLabel(data);
+    return `
+        <div class="trip-traffic-summary">
+            <span style="display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--text-primary);">
+                <span style="width:8px;height:8px;border-radius:50%;background:${dotColor};display:inline-block;"></span>
+                ${escapeUserHtml(data.periodLabel || 'Tráfico actual')}
+            </span>
+            <span style="font-size:0.7rem;color:var(--text-muted);">${escapeUserHtml(srcText)}</span>
+        </div>
+    `;
+}
+
+function formatOptionTrafficBadgeHtml(trafficInfo) {
+    if (!trafficInfo) return '';
+    if (trafficInfo.level === 'lento') {
+        const extra = trafficInfo.delayMin > 0 ? ` (+${trafficInfo.delayMin} min)` : '';
+        return `<span class="trip-traffic-pill lento">Tráfico lento${extra}</span>`;
+    }
+    if (trafficInfo.level === 'moderado') {
+        const extra = trafficInfo.delayMin > 0 ? ` (+${trafficInfo.delayMin} min)` : '';
+        return `<span class="trip-traffic-pill moderado">Moderado${extra}</span>`;
+    }
+    return TrafficState.enabled ? `<span class="trip-traffic-pill fluido">Fluido</span>` : '';
+}
+
+function initTrafficModule() {
+    loadTrafficSummary();
+    if (TrafficState.refreshTimer) clearInterval(TrafficState.refreshTimer);
+    TrafficState.refreshTimer = setInterval(() => {
+        if (TrafficState.enabled || document.getElementById('tab-planificador')?.classList.contains('active')) {
+            loadTrafficSummary({ force: true });
+        }
+    }, 120000);
+}
+
+window.toggleTrafficLayer = toggleTrafficLayer;
 
 

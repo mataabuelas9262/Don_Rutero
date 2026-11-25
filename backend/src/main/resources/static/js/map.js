@@ -605,3 +605,101 @@ async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
         console.error("Error al cargar paradas físicas:", err.message);
     }
 }
+
+let trafficCorridorGroup = null;
+let tomtomTrafficTileLayer = null;
+
+function getTrafficLevelColor(level) {
+    if (level === 'lento') return '#EF4444';
+    if (level === 'moderado') return '#F59E0B';
+    return '#10B981';
+}
+
+function getTrafficLevelLabel(level) {
+    if (level === 'lento') return 'Tráfico lento';
+    if (level === 'moderado') return 'Tráfico moderado';
+    return 'Tráfico fluido';
+}
+
+function renderTrafficOverlay(trafficData, enabled) {
+    if (!mapInstance) return;
+
+    if (tomtomTrafficTileLayer && mapInstance.hasLayer(tomtomTrafficTileLayer)) {
+        mapInstance.removeLayer(tomtomTrafficTileLayer);
+    }
+    if (trafficCorridorGroup) {
+        trafficCorridorGroup.clearLayers();
+    }
+    if (!enabled || !trafficData) return;
+
+    if (trafficData.tomtomTilesEnabled && typeof API_BASE_URL === 'string') {
+        if (!tomtomTrafficTileLayer) {
+            tomtomTrafficTileLayer = L.tileLayer(`${API_BASE_URL}/traffic/tiles/{z}/{x}/{y}.png`, {
+                opacity: 0.78,
+                maxNativeZoom: 18,
+                maxZoom: 20,
+                zIndex: 420
+            });
+        }
+        tomtomTrafficTileLayer.addTo(mapInstance);
+    }
+
+    if (!trafficCorridorGroup) {
+        trafficCorridorGroup = L.layerGroup().addTo(mapInstance);
+    } else if (!mapInstance.hasLayer(trafficCorridorGroup)) {
+        trafficCorridorGroup.addTo(mapInstance);
+    }
+
+    const corridors = Array.isArray(trafficData.corridors) ? trafficData.corridors : [];
+    const lineOpacity = trafficData.tomtomTilesEnabled ? 0.25 : 0.85;
+    const lineWeight = trafficData.tomtomTilesEnabled ? 4 : 5;
+
+    corridors.forEach((corr) => {
+        if (!Array.isArray(corr.points) || corr.points.length < 2) return;
+        const color = getTrafficLevelColor(corr.level);
+        const levelLabel = getTrafficLevelLabel(corr.level);
+        const speedText = corr.speedKmh ? `~${Number(corr.speedKmh).toFixed(0)} km/h` : '';
+        const srcText = corr.source === 'tomtom_y_gps' ? 'TomTom + GPS en vivo'
+            : corr.source === 'tomtom' ? 'TomTom en vivo'
+            : corr.source === 'gps_comunitario' ? 'GPS en vivo Don Rutero'
+            : 'Estimación por horario';
+
+        const halo = L.polyline(corr.points, {
+            color: '#ffffff',
+            weight: lineWeight + 2.5,
+            opacity: lineOpacity * 0.55,
+            lineCap: 'round',
+            lineJoin: 'round',
+            interactive: false
+        });
+        const line = L.polyline(corr.points, {
+            color,
+            weight: lineWeight,
+            opacity: lineOpacity,
+            lineCap: 'round',
+            lineJoin: 'round'
+        }).bindTooltip(
+            `<strong>${escapeMapHtml(corr.name)}</strong><br>${escapeMapHtml(levelLabel)}${speedText ? ` (${escapeMapHtml(speedText)})` : ''}<br><span style="opacity:0.8;font-size:0.75em;">${escapeMapHtml(srcText)}</span>`,
+            { sticky: true }
+        );
+        trafficCorridorGroup.addLayer(halo);
+        trafficCorridorGroup.addLayer(line);
+    });
+
+    const cells = Array.isArray(trafficData.communityCells) ? trafficData.communityCells : [];
+    cells.forEach((cell) => {
+        if (typeof cell.lat !== 'number' || typeof cell.lng !== 'number') return;
+        const color = getTrafficLevelColor(cell.level);
+        const dot = L.circleMarker([cell.lat, cell.lng], {
+            radius: 7,
+            color: '#ffffff',
+            weight: 2,
+            fillColor: color,
+            fillOpacity: 0.92
+        }).bindTooltip(
+            `<strong>GPS en vivo Don Rutero</strong><br>Velocidad promedio: ${Number(cell.speedKmh).toFixed(1)} km/h (${Number(cell.samples || 1)} lectura${Number(cell.samples) === 1 ? '' : 's'})`,
+            { sticky: true }
+        );
+        trafficCorridorGroup.addLayer(dot);
+    });
+}

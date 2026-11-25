@@ -180,6 +180,23 @@ const Api = {
         return data;
     },
 
+    getLiveTraffic: async () => {
+        const response = await fetch(`${API_BASE_URL}/traffic/live`);
+        if (!response.ok) throw new Error('Error al consultar tráfico en vivo');
+        return await response.json();
+    },
+
+    sendTrafficTelemetry: async (lat, lng, speedKmh) => {
+        try {
+            await fetch(`${API_BASE_URL}/traffic/telemetry`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lat, lng, speedKmh }),
+                keepalive: true
+            });
+        } catch (_) {}
+    },
+
     // -----------------------------------------------------
     // GESTIÓN DE ADMINISTRACIÓN (PROTEGIDAS)
     // -----------------------------------------------------
