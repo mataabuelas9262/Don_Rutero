@@ -3931,6 +3931,8 @@ const onboardState = {
     currentDistM: 0,
     timerId: null,
     watchId: null,
+    bgPollTimerId: null,
+    wakeLockSentinel: null,
     busMarker: null,
     notifiedNearLeg: false,
     notifiedNearEnd: false,
@@ -3940,7 +3942,10 @@ const onboardState = {
     lastTelemetrySentMs: 0,
     alarmEnabled: true,
     bgNotifEnabled: false,
-    lastNotifSyncMs: 0
+    lastNotifSyncMs: 0,
+    hudSnapshot: null,
+    cachedRoundIconColor: null,
+    cachedRoundIconUrl: null
 };
 
 function normalizeLatLngPoint(p) {
@@ -4123,25 +4128,31 @@ function updateOnboardHudAtDistance(distM) {
     const upcomingStop = onboardState.stopsTimeline.find((s) => s.cumM > distM + 40 && s.legIdx === pt.legIdx);
     const isArrived = distM >= total - 35;
     const isNearAction = remainToActionM <= 300;
+    const destLabel = inFirstLeg
+        ? `Transbordo ${opt.transferLabel ? `${opt.transferLabel} ` : ''}(${opt.routeB.name.trim()})`
+        : (opt.alightLabel || (selectedDestination ? selectedDestination.name : 'tu destino'));
+
+    let nextStopText = '';
+    if (isArrived) {
+        nextStopText = `Llegaste cerca de ${opt.alightLabel || 'tu destino'}`;
+    } else if (isNearAction) {
+        nextStopText = inFirstLeg
+            ? `Prepárate para transbordar (${remainToActionM} m)`
+            : `¡Prepárate para bajar! (${remainToActionM} m)`;
+    } else if (upcomingStop) {
+        const toNext = Math.max(20, Math.round(upcomingStop.cumM - distM));
+        nextStopText = `Próx: ${upcomingStop.name} (${formatOnboardDistance(toNext)})`;
+    } else {
+        nextStopText = inFirstLeg
+            ? `Rumbo a transbordo (${formatOnboardDistance(remainToActionM)})`
+            : `Rumbo a descenso (${formatOnboardDistance(remainToActionM)})`;
+    }
 
     if (nextStopEl) {
         nextStopEl.classList.toggle('alert-near', isNearAction && !isArrived);
-        if (isArrived) {
-            nextStopEl.textContent = `Llegaste cerca de ${opt.alightLabel || 'tu destino'}`;
-        } else if (isNearAction) {
-            if (inFirstLeg) {
-                nextStopEl.textContent = `Prepárate para transbordar (${remainToActionM} m)`;
-            } else {
-                nextStopEl.textContent = `¡Prepárate para bajar! (${remainToActionM} m)`;
-            }
-        } else if (upcomingStop) {
-            const toNext = Math.max(20, Math.round(upcomingStop.cumM - distM));
-            nextStopEl.textContent = `Próx. parada: ${upcomingStop.name} (${formatOnboardDistance(toNext)})`;
-        } else {
-            nextStopEl.textContent = inFirstLeg
-                ? `Rumbo a transbordo (${formatOnboardDistance(remainToActionM)})`
-                : `Rumbo a descenso (${formatOnboardDistance(remainToActionM)})`;
-        }
+        nextStopEl.textContent = upcomingStop && !isArrived && !isNearAction
+            ? nextStopText.replace('Próx:', 'Próx. parada:')
+            : nextStopText;
     }
 
     if (alightEl) {
@@ -4151,10 +4162,22 @@ function updateOnboardHudAtDistance(distM) {
             const trPlace = opt.transferLabel ? `${opt.transferLabel} · ` : '';
             alightEl.textContent = `Transbordo (${trPlace}${opt.routeB.name.trim()}) en ${formatOnboardDistance(remainToActionM)} (~${etaMin} min)`;
         } else {
-            const destLabel = opt.alightLabel || (selectedDestination ? selectedDestination.name : 'tu destino');
             alightEl.textContent = `Tu bajada (${destLabel}) en ${formatOnboardDistance(remainToActionM)} (~${etaMin} min)`;
         }
     }
+
+    onboardState.hudSnapshot = {
+        routeName: pt.routeName,
+        routeColor: pt.routeColor || '#E63E21',
+        pct,
+        remainToActionM,
+        etaMin,
+        nextStopShort: nextStopText,
+        destLabel,
+        isNearAction,
+        isArrived,
+        inFirstLeg
+    };
 
     if (inFirstLeg && isNearAction && !onboardState.notifiedNearLeg) {
         onboardState.notifiedNearLeg = true;
@@ -4188,9 +4211,17 @@ function clearOnboardTimers() {
         clearInterval(onboardState.timerId);
         onboardState.timerId = null;
     }
+    if (onboardState.bgPollTimerId) {
+        clearInterval(onboardState.bgPollTimerId);
+        onboardState.bgPollTimerId = null;
+    }
     if (onboardState.watchId != null && navigator.geolocation) {
         navigator.geolocation.clearWatch(onboardState.watchId);
         onboardState.watchId = null;
+    }
+    if (onboardState.wakeLockSentinel) {
+        onboardState.wakeLockSentinel.release().catch(() => {});
+        onboardState.wakeLockSentinel = null;
     }
 }
 
@@ -4283,6 +4314,51 @@ function setOnboardWaitingGpsHud(message) {
     syncOnboardHudViewportOffset();
 }
 
+function processOnboardGpsPosition(pos) {
+    if (!onboardState.active || onboardState.source !== 'gps' || !pos || !pos.coords) return;
+    const { latitude, longitude, speed } = pos.coords;
+    const nowMs = Date.now();
+    const proj = projectCoordOntoJourney(latitude, longitude);
+
+    let measuredKmh = null;
+    if (typeof speed === 'number' && isFinite(speed) && speed >= 0.6 && speed <= 20) {
+        measuredKmh = speed * 3.6;
+    } else if (onboardState.lastGpsFix) {
+        const dtSec = (nowMs - onboardState.lastGpsFix.tsMs) / 1000;
+        if (dtSec >= 5 && dtSec <= 90) {
+            const stepM = calculateDistanceMeters(
+                onboardState.lastGpsFix.lat,
+                onboardState.lastGpsFix.lng,
+                latitude,
+                longitude
+            );
+            if (stepM >= 15) {
+                const calcKmh = (stepM / dtSec) * 3.6;
+                if (calcKmh >= 2 && calcKmh <= 68) {
+                    measuredKmh = calcKmh;
+                }
+            }
+        }
+    }
+    onboardState.lastGpsFix = { lat: latitude, lng: longitude, tsMs: nowMs };
+
+    if (measuredKmh !== null && proj.offsetM <= 85) {
+        const clamped = Math.max(9, Math.min(34, measuredKmh));
+        onboardState.liveBusSpeedKmh = onboardState.liveBusSpeedKmh
+            ? (onboardState.liveBusSpeedKmh * 0.55 + clamped * 0.45)
+            : clamped;
+
+        if (nowMs - onboardState.lastTelemetrySentMs >= 25000 && typeof Api.sendTrafficTelemetry === 'function') {
+            onboardState.lastTelemetrySentMs = nowMs;
+            Api.sendTrafficTelemetry(latitude, longitude, Math.round(measuredKmh * 10) / 10);
+        }
+    }
+
+    onboardState.currentDistM = proj.bestCumM;
+    updateOnboardHudAtDistance(onboardState.currentDistM);
+    renderOnboardBusMarker(latitude, longitude, '#005C97');
+}
+
 function startOnboardGpsWatch() {
     clearOnboardTimers();
     const simAllowed = canUseOnboardSimulation();
@@ -4306,60 +4382,36 @@ function startOnboardGpsWatch() {
         }
         return;
     }
+    if (navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+        navigator.wakeLock.request('screen').then((s) => {
+            onboardState.wakeLockSentinel = s;
+        }).catch(() => {});
+    }
     setOnboardWaitingGpsHud('Buscando tu ubicación GPS...');
     showToast('GPS en vivo activado para tu viaje');
     onboardState.watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-            if (!onboardState.active || onboardState.source !== 'gps') return;
-            const { latitude, longitude, speed } = pos.coords;
-            const nowMs = Date.now();
-            const proj = projectCoordOntoJourney(latitude, longitude);
-
-            let measuredKmh = null;
-            if (typeof speed === 'number' && isFinite(speed) && speed >= 0.6 && speed <= 20) {
-                measuredKmh = speed * 3.6;
-            } else if (onboardState.lastGpsFix) {
-                const dtSec = (nowMs - onboardState.lastGpsFix.tsMs) / 1000;
-                if (dtSec >= 5 && dtSec <= 90) {
-                    const stepM = calculateDistanceMeters(
-                        onboardState.lastGpsFix.lat,
-                        onboardState.lastGpsFix.lng,
-                        latitude,
-                        longitude
-                    );
-                    if (stepM >= 15) {
-                        const calcKmh = (stepM / dtSec) * 3.6;
-                        if (calcKmh >= 2 && calcKmh <= 68) {
-                            measuredKmh = calcKmh;
-                        }
-                    }
-                }
-            }
-            onboardState.lastGpsFix = { lat: latitude, lng: longitude, tsMs: nowMs };
-
-            if (measuredKmh !== null && proj.offsetM <= 85) {
-                const clamped = Math.max(9, Math.min(34, measuredKmh));
-                onboardState.liveBusSpeedKmh = onboardState.liveBusSpeedKmh
-                    ? (onboardState.liveBusSpeedKmh * 0.55 + clamped * 0.45)
-                    : clamped;
-
-                if (nowMs - onboardState.lastTelemetrySentMs >= 25000 && typeof Api.sendTrafficTelemetry === 'function') {
-                    onboardState.lastTelemetrySentMs = nowMs;
-                    Api.sendTrafficTelemetry(latitude, longitude, Math.round(measuredKmh * 10) / 10);
-                }
-            }
-
-            onboardState.currentDistM = proj.bestCumM;
-            updateOnboardHudAtDistance(onboardState.currentDistM);
-            renderOnboardBusMarker(latitude, longitude, '#005C97');
-        },
+        processOnboardGpsPosition,
         (err) => {
             const msg = getGeolocationErrorMessage(err);
             showToast(simAllowed ? `${msg} Puedes usar Simular.` : `${msg} Revisa los permisos de ubicación.`, 'error');
             setOnboardWaitingGpsHud('Esperando señal GPS...');
         },
-        { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
+        { enableHighAccuracy: true, maximumAge: 4000, timeout: 7000 }
     );
+    // Sondeo de respaldo para forzar lecturas más frecuentes en segundo plano si watchPosition se pausa
+    onboardState.bgPollTimerId = setInterval(() => {
+        if (!onboardState.active || onboardState.source !== 'gps') return;
+        const lastAge = onboardState.lastGpsFix ? (Date.now() - onboardState.lastGpsFix.tsMs) : Infinity;
+        if (lastAge >= 6000) {
+            navigator.geolocation.getCurrentPosition(
+                processOnboardGpsPosition,
+                () => {},
+                { enableHighAccuracy: true, maximumAge: 4000, timeout: 5500 }
+            );
+        } else if (onboardState.bgNotifEnabled || document.hidden) {
+            syncOnboardSystemNotification(false);
+        }
+    }, 8000);
 }
 
 function startOnboardTrip(optionIdx) {
@@ -5543,48 +5595,201 @@ function ensureOnboardServiceWorker() {
     return _onboardSwRegPromise;
 }
 
+function getSafeNotifHexColor(color, fallback = '#E63E21') {
+    const val = String(color || '').trim();
+    return /^#[0-9a-fA-F]{6}$/.test(val) ? val : fallback;
+}
+
+function buildOnboardNotifRoundIconUrl(routeColor) {
+    const color = getSafeNotifHexColor(routeColor, '#E63E21');
+    if (onboardState.cachedRoundIconColor === color && onboardState.cachedRoundIconUrl) {
+        return onboardState.cachedRoundIconUrl;
+    }
+    try {
+        const c = document.createElement('canvas');
+        c.width = 128;
+        c.height = 128;
+        const ctx = c.getContext('2d');
+        if (!ctx) return 'assets/icon-192.png';
+        ctx.clearRect(0, 0, 128, 128);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(64, 64, 58, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Silueta blanca del camion (sin degradados)
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.roundRect(38, 30, 52, 50, 10);
+        ctx.fill();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(45, 38, 38, 19, 4);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(49, 68, 4, 0, Math.PI * 2);
+        ctx.arc(79, 68, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.roundRect(44, 78, 10, 10, 3);
+        ctx.roundRect(74, 78, 10, 10, 3);
+        ctx.fill();
+
+        const dataUrl = c.toDataURL('image/png');
+        onboardState.cachedRoundIconColor = color;
+        onboardState.cachedRoundIconUrl = dataUrl;
+        return dataUrl;
+    } catch (_) {
+        return 'assets/icon-192.png';
+    }
+}
+
+function buildOnboardNotifBannerDataUrl(snap) {
+    if (!snap) return null;
+    try {
+        const W = 640;
+        const H = 166;
+        const c = document.createElement('canvas');
+        c.width = W;
+        c.height = H;
+        const ctx = c.getContext('2d');
+        if (!ctx) return null;
+
+        const accentColor = snap.isNearAction && !snap.isArrived
+            ? '#DC2626'
+            : getSafeNotifHexColor(snap.routeColor, '#E63E21');
+        const fillBarColor = snap.isNearAction && !snap.isArrived ? '#DC2626' : '#10B981';
+        const pct = Math.max(0, Math.min(100, Number(snap.pct || 0)));
+
+        // Fondo blanco plano sólido + franja superior de color real de la ruta
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = accentColor;
+        ctx.fillRect(0, 0, W, 6);
+
+        // Fila 1: Estado + Ruta a la izquierda, Pill ETA sólido a la derecha
+        ctx.fillStyle = fillBarColor;
+        ctx.beginPath();
+        ctx.arc(30, 34, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        const routeUpper = String(snap.routeName || 'EN RUTA').toUpperCase();
+        const headerLabel = `VOY A BORDO · ${routeUpper}`;
+        ctx.fillStyle = '#0F172A';
+        ctx.font = '800 17px system-ui, -apple-system, Roboto, sans-serif';
+        let clippedHeader = headerLabel;
+        while (ctx.measureText(clippedHeader).width > W - 180 && clippedHeader.length > 10) {
+            clippedHeader = clippedHeader.slice(0, -2) + '…';
+        }
+        ctx.fillText(clippedHeader, 44, 40);
+
+        const etaText = snap.isArrived ? 'Llegada' : `~${Math.max(1, Number(snap.etaMin || 1))} min`;
+        ctx.font = '800 18px system-ui, -apple-system, Roboto, sans-serif';
+        const etaW = Math.max(82, ctx.measureText(etaText).width + 26);
+        const pillX = W - 22 - etaW;
+        ctx.fillStyle = snap.isNearAction && !snap.isArrived ? '#DC2626' : '#0F172A';
+        ctx.beginPath();
+        ctx.roundRect(pillX, 18, etaW, 32, 8);
+        ctx.fill();
+        ctx.fillStyle = '#FFFFFF';
+        ctx.textAlign = 'center';
+        ctx.fillText(etaText, pillX + etaW / 2, 40);
+        ctx.textAlign = 'left';
+
+        // Fila 2: Bajada a la izquierda, distancia + % a la derecha
+        const rightMeta = `${formatOnboardDistance(snap.remainToActionM || 0)} · ${Math.round(pct)}%`;
+        ctx.font = '700 18px system-ui, -apple-system, Roboto, sans-serif';
+        const rightW = ctx.measureText(rightMeta).width;
+        ctx.fillStyle = '#475569';
+        ctx.textAlign = 'right';
+        ctx.fillText(rightMeta, W - 22, 84);
+        ctx.textAlign = 'left';
+
+        const destText = `${snap.inFirstLeg ? 'Transbordo' : 'Bajada'}: ${snap.destLabel || 'tu destino'}`;
+        ctx.fillStyle = '#0F172A';
+        ctx.font = '700 20px system-ui, -apple-system, Roboto, sans-serif';
+        let clippedDest = destText;
+        const maxDestW = W - 44 - rightW - 20;
+        while (ctx.measureText(clippedDest).width > maxDestW && clippedDest.length > 8) {
+            clippedDest = clippedDest.slice(0, -2) + '…';
+        }
+        ctx.fillText(clippedDest, 22, 84);
+
+        // Barra sólida de progreso (#E2E8F0 track + #10B981 fill)
+        const trackX = 22;
+        const trackY = 104;
+        const trackW = W - 44;
+        const trackH = 12;
+        ctx.fillStyle = '#E2E8F0';
+        ctx.beginPath();
+        ctx.roundRect(trackX, trackY, trackW, trackH, 6);
+        ctx.fill();
+
+        const fillW = Math.max(trackH, Math.round((pct / 100) * trackW));
+        ctx.fillStyle = fillBarColor;
+        ctx.beginPath();
+        ctx.roundRect(trackX, trackY, Math.min(trackW, fillW), trackH, 6);
+        ctx.fill();
+
+        // Etiquetas inferiores
+        ctx.fillStyle = '#64748B';
+        ctx.font = '600 15px system-ui, -apple-system, Roboto, sans-serif';
+        ctx.fillText('Subida', trackX, 144);
+        ctx.textAlign = 'center';
+        ctx.fillText('En ruta', W / 2, 144);
+        ctx.textAlign = 'right';
+        ctx.fillText('Bajada (aviso 300 m)', W - 22, 144);
+        ctx.textAlign = 'left';
+
+        return c.toDataURL('image/png');
+    } catch (_) {
+        return null;
+    }
+}
+
 async function syncOnboardSystemNotification(forceUrgent = false) {
     if (!onboardState.active || !('Notification' in window) || Notification.permission !== 'granted') return;
     const now = Date.now();
-    if (!forceUrgent && (now - onboardState.lastNotifSyncMs) < 8000) return;
+    if (!forceUrgent && (now - onboardState.lastNotifSyncMs) < 3000) return;
     onboardState.lastNotifSyncMs = now;
 
-    const routeName = document.getElementById('onboard-route-name')?.textContent || 'En ruta';
-    const nextStop = document.getElementById('onboard-next-stop')?.textContent || 'Siguiendo viaje';
-    const alightInfo = document.getElementById('onboard-alight-info')?.textContent || '';
+    const snap = onboardState.hudSnapshot;
+    const routeName = (snap && snap.routeName) || document.getElementById('onboard-route-name')?.textContent || 'En ruta';
+    const nextStop = (snap && snap.nextStopShort) || document.getElementById('onboard-next-stop')?.textContent || 'Siguiendo viaje';
+    const etaLabel = snap
+        ? (snap.isArrived ? 'Llegada' : (snap.isNearAction ? '¡Prepárate para bajar!' : `~${Math.max(1, snap.etaMin)} min`))
+        : '';
+    const title = etaLabel ? `${routeName} · ${etaLabel}` : routeName;
+    const bodySecondLine = snap
+        ? (snap.isArrived ? 'Recorrido completado' : `Bajada: ${snap.destLabel} · faltan ${formatOnboardDistance(snap.remainToActionM)}`)
+        : (document.getElementById('onboard-alight-info')?.textContent || '');
+    const iconUrl = buildOnboardNotifRoundIconUrl(snap && snap.isNearAction && !snap.isArrived ? '#DC2626' : (snap && snap.routeColor));
+    const bannerUrl = buildOnboardNotifBannerDataUrl(snap);
 
     try {
         const reg = await ensureOnboardServiceWorker();
         if (reg && typeof reg.showNotification === 'function') {
-            await reg.showNotification(`Don Rutero · ${routeName}`, {
-                body: `${nextStop}${alightInfo ? `\n${alightInfo}` : ''}`,
-                icon: 'assets/icon-192.png',
-                badge: 'assets/icon-192.png',
+            const opts = {
+                body: `${nextStop}${bodySecondLine ? `\n${bodySecondLine}` : ''}`,
+                icon: iconUrl,
+                badge: 'assets/badge-bus.png',
                 tag: 'donrutero-onboard',
                 renotify: forceUrgent,
                 silent: !forceUrgent,
-                actions: [{ action: 'stop-onboard', title: 'Finalizar' }]
-            });
+                actions: [{ action: 'stop-onboard', title: 'Finalizar viaje' }]
+            };
+            if (bannerUrl) opts.image = bannerUrl;
+            await reg.showNotification(title, opts);
         } else {
-            new Notification(`Don Rutero · ${routeName}`, {
-                body: `${nextStop}${alightInfo ? ` · ${alightInfo}` : ''}`,
-                icon: 'assets/icon-192.png',
+            new Notification(title, {
+                body: `${nextStop}${bodySecondLine ? ` · ${bodySecondLine}` : ''}`,
+                icon: iconUrl,
                 tag: 'donrutero-onboard',
                 silent: !forceUrgent
             });
         }
     } catch (_) {}
-
-    if ('mediaSession' in navigator) {
-        try {
-            navigator.mediaSession.metadata = new MediaMetadata({
-                title: nextStop,
-                artist: `Don Rutero · ${routeName}`,
-                album: alightInfo || 'Voy a bordo',
-                artwork: [{ src: 'assets/icon-192.png', sizes: '192x192', type: 'image/png' }]
-            });
-        } catch (_) {}
-    }
 }
 
 function updateBgNotifButtonUi() {
@@ -5630,7 +5835,15 @@ window.toggleOnboardBackgroundNotification = toggleOnboardBackgroundNotification
 
 function setupOnboardBackgroundListeners() {
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden && onboardState.active && (onboardState.bgNotifEnabled || Notification.permission === 'granted')) {
+        if (!onboardState.active) return;
+        if (onboardState.source === 'gps' && navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                processOnboardGpsPosition,
+                () => {},
+                { enableHighAccuracy: true, maximumAge: 3000, timeout: 4500 }
+            );
+        }
+        if (document.hidden && (onboardState.bgNotifEnabled || Notification.permission === 'granted')) {
             syncOnboardSystemNotification(false);
         }
     });

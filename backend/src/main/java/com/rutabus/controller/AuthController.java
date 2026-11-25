@@ -17,9 +17,18 @@ import org.springframework.web.bind.annotation.*;
 
 import java.security.SecureRandom;
 import java.util.HashMap;
+import java.util.Hashtable;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
+import javax.naming.Context;
+import javax.naming.NameNotFoundException;
+import javax.naming.NamingException;
+import javax.naming.directory.Attribute;
+import javax.naming.directory.Attributes;
+import javax.naming.directory.DirContext;
+import javax.naming.directory.InitialDirContext;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -31,16 +40,35 @@ public class AuthController {
     private static final int MAX_CODE_ATTEMPTS = 5;
     private static final long RATE_WINDOW_MS = 60 * 1000L; // 1 minuto
     private static final int MAX_AUTH_REQUESTS_PER_MIN = 15;
+    private static final long REGISTER_SHORT_WINDOW_MS = 10 * 60 * 1000L; // 10 minutos
+    private static final int MAX_REGISTER_PER_10_MIN = 3;
+    private static final long REGISTER_DAY_WINDOW_MS = 24 * 60 * 60 * 1000L; // 24 horas
+    private static final int MAX_REGISTER_PER_DAY = 6;
+    private static final long MX_CACHE_TTL_MS = 60 * 60 * 1000L; // 1 hora
+    private static final Set<String> BLOCKED_EMAIL_DOMAINS = Set.of(
+            "example.com", "example.org", "example.net", "test.com", "localhost",
+            "mailinator.com", "guerrillamail.com", "yopmail.com", "tempmail.com",
+            "10minutemail.com", "trashmail.com", "sharklasers.com"
+    );
+    private static final Set<String> BLOCKED_TLDS = Set.of(
+            "local", "internal", "invalid", "test", "example", "localhost", "mxx", "con", "cpm"
+    );
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, VerificationEntry> pendingCodes = new ConcurrentHashMap<>();
     private final Map<String, RateLimitEntry> rateLimits = new ConcurrentHashMap<>();
+    private final Map<String, RateLimitEntry> registerShortLimits = new ConcurrentHashMap<>();
+    private final Map<String, RateLimitEntry> registerDayLimits = new ConcurrentHashMap<>();
+    private final Map<String, long[]> mxCache = new ConcurrentHashMap<>();
 
     @Value("${app.auth.expose-demo-codes:false}")
     private boolean exposeDemoCodes;
 
     @Value("${app.auth.require-email-verification:true}")
     private boolean requireEmailVerification;
+
+    @Value("${app.auth.verify-email-mx:true}")
+    private boolean verifyEmailMx;
 
     @Autowired
     private AuthenticationManager authenticationManager;
@@ -74,12 +102,10 @@ public class AuthController {
         }
     }
 
-    private boolean isRateLimited(HttpServletRequest req, String bucket) {
-        String ip = req != null ? req.getRemoteAddr() : "unknown";
-        String key = bucket + ":" + ip;
+    private boolean checkWindowLimit(Map<String, RateLimitEntry> store, String key, long windowMs, int maxAllowed) {
         long now = System.currentTimeMillis();
-        RateLimitEntry entry = rateLimits.compute(key, (k, existing) -> {
-            if (existing == null || now - existing.windowStart >= RATE_WINDOW_MS) {
+        RateLimitEntry entry = store.compute(key, (k, existing) -> {
+            if (existing == null || now - existing.windowStart >= windowMs) {
                 RateLimitEntry fresh = new RateLimitEntry(now);
                 fresh.count = 1;
                 return fresh;
@@ -87,17 +113,85 @@ public class AuthController {
             existing.count++;
             return existing;
         });
-        if (rateLimits.size() > 5000) {
-            rateLimits.entrySet().removeIf(e -> now - e.getValue().windowStart >= RATE_WINDOW_MS);
+        if (store.size() > 5000) {
+            store.entrySet().removeIf(e -> now - e.getValue().windowStart >= windowMs);
         }
-        return entry.count > MAX_AUTH_REQUESTS_PER_MIN;
+        return entry.count > maxAllowed;
+    }
+
+    private boolean isRateLimited(HttpServletRequest req, String bucket) {
+        String ip = req != null ? req.getRemoteAddr() : "unknown";
+        return checkWindowLimit(rateLimits, bucket + ":" + ip, RATE_WINDOW_MS, MAX_AUTH_REQUESTS_PER_MIN);
+    }
+
+    private boolean isRegisterRateLimited(HttpServletRequest req) {
+        String ip = req != null ? req.getRemoteAddr() : "unknown";
+        return checkWindowLimit(registerShortLimits, ip, REGISTER_SHORT_WINDOW_MS, MAX_REGISTER_PER_10_MIN)
+                || checkWindowLimit(registerDayLimits, ip, REGISTER_DAY_WINDOW_MS, MAX_REGISTER_PER_DAY);
+    }
+
+    private boolean isEmailDomainAllowed(String emailStr) {
+        int atIdx = emailStr.lastIndexOf('@');
+        if (atIdx <= 0 || atIdx >= emailStr.length() - 1) return false;
+        String domain = emailStr.substring(atIdx + 1).trim().toLowerCase();
+        if (domain.isEmpty() || !domain.contains(".") || BLOCKED_EMAIL_DOMAINS.contains(domain)) {
+            return false;
+        }
+        int lastDot = domain.lastIndexOf('.');
+        String tld = domain.substring(lastDot + 1);
+        if (tld.length() < 2 || BLOCKED_TLDS.contains(tld)) {
+            return false;
+        }
+        if (!verifyEmailMx) {
+            return true;
+        }
+        long now = System.currentTimeMillis();
+        long[] cached = mxCache.get(domain);
+        if (cached != null && now - cached[0] < MX_CACHE_TTL_MS) {
+            return cached[1] == 1L;
+        }
+        boolean valid = lookupDomainHasMx(domain);
+        if (mxCache.size() > 3000) {
+            mxCache.entrySet().removeIf(e -> now - e.getValue()[0] >= MX_CACHE_TTL_MS);
+        }
+        mxCache.put(domain, new long[]{now, valid ? 1L : 0L});
+        return valid;
+    }
+
+    private boolean lookupDomainHasMx(String domain) {
+        try {
+            Hashtable<String, String> env = new Hashtable<>();
+            env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.dns.DnsContextFactory");
+            env.put("com.sun.jndi.dns.timeout.initial", "2500");
+            env.put("com.sun.jndi.dns.timeout.retries", "1");
+            DirContext ctx = new InitialDirContext(env);
+            try {
+                Attributes attrs = ctx.getAttributes(domain, new String[]{"MX"});
+                Attribute mx = attrs != null ? attrs.get("MX") : null;
+                if (mx == null || mx.size() == 0) return false;
+                for (int i = 0; i < mx.size(); i++) {
+                    String rec = String.valueOf(mx.get(i)).trim();
+                    if (!rec.endsWith(" .") && !rec.equals(".")) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                ctx.close();
+            }
+        } catch (NameNotFoundException e) {
+            return false;
+        } catch (NamingException e) {
+            // Si el DNS no está disponible temporalmente, evita falsos negativos en registros reales
+            return e.getMessage() == null || !e.getMessage().toLowerCase().contains("name not found");
+        }
     }
 
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@RequestBody AuthRequest registerRequest, HttpServletRequest httpReq) {
-        if (isRateLimited(httpReq, "register")) {
+        if (isRegisterRateLimited(httpReq)) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                    .body(Map.of("error", "Demasiados intentos. Espera un minuto e inténtalo de nuevo."));
+                    .body(Map.of("error", "Demasiados registros recientes desde esta red. Intenta más tarde."));
         }
 
         String username = registerRequest.getUsername() != null ? registerRequest.getUsername().trim() : "";
@@ -111,6 +205,10 @@ public class AuthController {
         }
         if (emailStr.isEmpty() || emailStr.length() > 100 || !EMAIL_PATTERN.matcher(emailStr).matches()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Ingresa un correo electrónico válido."));
+        }
+        if (!isEmailDomainAllowed(emailStr)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "El dominio del correo no es válido o no recibe correos. Revisa cómo está escrito."));
         }
         if (password.length() < 8 || password.length() > 128) {
             return ResponseEntity.badRequest().body(Map.of("error", "La contraseña debe tener entre 8 y 128 caracteres."));
