@@ -647,6 +647,8 @@ async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
 let trafficCorridorGroup = null;
 let tomtomTrafficTileLayer = null;
 let pulseIncidentGroup = null;
+let pulseSightingGroup = null;
+const pulseSightingMarkersByRouteId = new Map();
 
 function getIncidentIconMeta(type) {
     const alertSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
@@ -665,7 +667,45 @@ function renderPulseMarkers(pulseData) {
     } else {
         pulseIncidentGroup.clearLayers();
     }
+    if (!pulseSightingGroup) {
+        pulseSightingGroup = L.layerGroup().addTo(mapInstance);
+    } else {
+        pulseSightingGroup.clearLayers();
+    }
+    pulseSightingMarkersByRouteId.clear();
     if (!pulseData) return;
+
+    const sightings = pulseData.sightingsByRoute || {};
+    const activeRouteId = window._activeDetailRouteId || null;
+    Object.values(sightings).forEach((s) => {
+        if (!s || typeof s.latitude !== 'number' || typeof s.longitude !== 'number') return;
+        const rid = Number(s.routeId);
+        const isFocused = Boolean(activeRouteId && rid === Number(activeRouteId));
+        const minsAgo = Number(s.minutesAgo || 0);
+        const minsChip = minsAgo <= 0 ? '<1m' : `${minsAgo}m`;
+        const busSvg = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="4" y="3" width="16" height="15" rx="3"></rect><path d="M4 11h16"></path><circle cx="8" cy="20" r="1"></circle><circle cx="16" cy="20" r="1"></circle></svg>`;
+        const label = isFocused ? `Camión visto · ${minsChip}` : `${minsChip}`;
+        const icon = L.divIcon({
+            className: 'pulse-sighting-marker',
+            html: `<div class="pulse-sighting-pill ${isFocused ? 'is-focused' : ''}">${busSvg}<span>${escapeMapHtml(label)}</span></div>`,
+            iconSize: null
+        });
+        const minsHuman = minsAgo <= 0 ? 'menos de 1 min' : `${minsAgo} min`;
+        const stopLine = s.stopName ? `<div style="font-size:0.78rem;color:#334155;margin-top:2px;">Cerca de <b>${escapeMapHtml(s.stopName)}</b></div>` : '';
+        const m = L.marker([s.latitude, s.longitude], {
+            icon,
+            zIndexOffset: isFocused ? 1360 : 1120
+        }).bindPopup(`
+            <div style="font-family:inherit;min-width:185px;">
+                <span style="display:inline-block;font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:999px;background:#ECFDF5;color:#047857;margin-bottom:4px;">Visto hace ${escapeMapHtml(minsHuman)}</span>
+                <h4 style="margin:0 0 2px 0;font-size:0.88rem;color:#0F172A;">${escapeMapHtml(s.routeName || 'Camión en ruta')}</h4>
+                ${stopLine}
+                <p style="margin:6px 0 0 0;font-size:0.72rem;color:#64748B;">Reporte ciudadano reciente (vigente 15 min).</p>
+            </div>
+        `);
+        pulseSightingGroup.addLayer(m);
+        if (rid) pulseSightingMarkersByRouteId.set(rid, m);
+    });
 
     const incidents = Array.isArray(pulseData.incidents) ? pulseData.incidents : [];
     const notices = Array.isArray(pulseData.activeNotices) ? pulseData.activeNotices : [];
@@ -721,7 +761,18 @@ function renderPulseMarkers(pulseData) {
     });
 }
 
+function focusBusSightingOnMap(routeId) {
+    if (!mapInstance) return false;
+    const m = pulseSightingMarkersByRouteId.get(Number(routeId));
+    if (!m) return false;
+    const ll = m.getLatLng();
+    mapInstance.setView(ll, Math.max(mapInstance.getZoom(), 15), { animate: true });
+    m.openPopup();
+    return true;
+}
+
 window.renderPulseMarkers = renderPulseMarkers;
+window.focusBusSightingOnMap = focusBusSightingOnMap;
 
 function getTrafficLevelColor(level) {
     if (level === 'lento') return '#EF4444';

@@ -203,11 +203,16 @@ const Api = {
         return await response.json();
     },
 
-    postBusSighting: async (routeId, routeName, direction, stopName) => {
+    postBusSighting: async (routeId, routeName, direction, stopName, lat = null, lng = null) => {
+        const payload = { routeId, routeName, direction, stopName };
+        if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
+            payload.latitude = lat;
+            payload.longitude = lng;
+        }
         const response = await fetch(`${API_BASE_URL}/pulse/sightings`, {
             method: 'POST',
             headers: getAuthHeaders(),
-            body: JSON.stringify({ routeId, routeName, direction, stopName })
+            body: JSON.stringify(payload)
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || data.message || 'No se pudo registrar avistamiento');

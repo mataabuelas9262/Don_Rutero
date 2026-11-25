@@ -494,14 +494,18 @@ async function selectRoute(routeId, cardElement) {
         }
 
         if (isMobileViewport()) setMobileSheetState('half');
-        showDetailPanel(route, routeStops, proximityInfo);
+        window._activeDetailRouteId = Number(route.id);
+        showDetailPanel(route, routeStops, proximityInfo, coords);
+        if (typeof renderPulseMarkers === 'function' && typeof PulseState !== 'undefined') {
+            renderPulseMarkers(PulseState);
+        }
     } catch (err) {
         showToast('Error al cargar la ruta', 'error');
         console.error(err);
     }
 }
 
-function showDetailPanel(route, routeStops, proximityInfo = null) {
+function showDetailPanel(route, routeStops, proximityInfo = null, coords = null) {
     const detailPanel = document.getElementById('detail-panel');
     const mainList = document.getElementById('main-list-section');
     mainList.style.display = 'none';
@@ -526,7 +530,8 @@ function showDetailPanel(route, routeStops, proximityInfo = null) {
     }
 
     document.getElementById('detail-desc').textContent = route.description || '';
-    updateDetailPulseActions(route, routeStops);
+    const routeCoords = Array.isArray(coords) ? coords : (route.coordinatesList || []);
+    updateDetailPulseActions(route, routeStops, routeCoords);
 
     // Meta tags with SVG icons
     const metaContainer = document.getElementById('detail-meta');
@@ -569,6 +574,17 @@ function showDetailPanel(route, routeStops, proximityInfo = null) {
                 </div>
             `;
             item.addEventListener('click', () => {
+                if (rs.stop && rs.stop.latitude != null && rs.stop.longitude != null) {
+                    window._lastFocusedRouteStop = {
+                        routeId: Number(route.id),
+                        name: rs.stop.name,
+                        lat: rs.stop.latitude,
+                        lng: rs.stop.longitude
+                    };
+                    if (typeof window._refreshActiveSightingStatus === 'function') {
+                        window._refreshActiveSightingStatus();
+                    }
+                }
                 if (typeof focusRouteStopOnMap === 'function') {
                     focusRouteStopOnMap(rs.stop.id);
                 }
@@ -581,10 +597,15 @@ function showDetailPanel(route, routeStops, proximityInfo = null) {
 }
 
 function closeDetailPanel() {
+    window._activeDetailRouteId = null;
+    window._refreshActiveSightingStatus = null;
     document.getElementById('detail-panel').classList.remove('visible');
     document.getElementById('main-list-section').style.display = 'flex';
     document.querySelectorAll('.route-card').forEach(c => c.classList.remove('active'));
     clearMapDrawings();
+    if (typeof renderPulseMarkers === 'function' && typeof PulseState !== 'undefined') {
+        renderPulseMarkers(PulseState);
+    }
 }
 
 // ----------------------------------------------------------
@@ -4830,6 +4851,9 @@ async function loadLivePulse() {
         if (typeof renderPulseMarkers === 'function') {
             renderPulseMarkers(data);
         }
+        if (typeof window._refreshActiveSightingStatus === 'function') {
+            window._refreshActiveSightingStatus();
+        }
         // Actualizar chips "Pasó hace X min" si la lista de rutas está visible
         if (currentFilter !== 'guias' && Array.isArray(allRoutes) && allRoutes.length > 0 && !document.getElementById('detail-panel')?.classList.contains('visible')) {
             // Refresco ligero en badges existentes sin reconstruir innecesariamente si coincide DOM
@@ -4961,7 +4985,113 @@ async function confirmZoneClearFromUi(zoneKey) {
     }
 }
 
-function updateDetailPulseActions(route, routeStops) {
+function isInsideMazatlanClientCoords(lat, lng) {
+    return typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)
+        && lat >= 23.12 && lat <= 23.38 && lng >= -106.56 && lng <= -106.30;
+}
+
+function resolveQuickSightingLocation(routeId) {
+    return new Promise((resolve) => {
+        const fallback = () => {
+            if (window.currentSearchLocation && isInsideMazatlanClientCoords(window.currentSearchLocation.lat, window.currentSearchLocation.lng)) {
+                resolve({ lat: window.currentSearchLocation.lat, lng: window.currentSearchLocation.lng, source: 'search' });
+                return;
+            }
+            if (window._lastFocusedRouteStop && Number(window._lastFocusedRouteStop.routeId) === Number(routeId)) {
+                resolve({ lat: window._lastFocusedRouteStop.lat, lng: window._lastFocusedRouteStop.lng, source: 'stop', stopName: window._lastFocusedRouteStop.name });
+                return;
+            }
+            resolve(null);
+        };
+
+        if (window._lastKnownGpsLocation && (Date.now() - window._lastKnownGpsLocation.ts) < 45000) {
+            resolve({ lat: window._lastKnownGpsLocation.lat, lng: window._lastKnownGpsLocation.lng, source: 'gps' });
+            return;
+        }
+        if (!('geolocation' in navigator)) {
+            fallback();
+            return;
+        }
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (!settled) { settled = true; fallback(); }
+        }, 3500);
+
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                const lat = pos?.coords?.latitude;
+                const lng = pos?.coords?.longitude;
+                if (isInsideMazatlanClientCoords(lat, lng)) {
+                    window._lastKnownGpsLocation = { lat, lng, ts: Date.now() };
+                    resolve({ lat, lng, source: 'gps' });
+                } else {
+                    fallback();
+                }
+            },
+            () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                fallback();
+            },
+            { enableHighAccuracy: true, timeout: 3200, maximumAge: 45000 }
+        );
+    });
+}
+
+function computePolylineSegmentMeters(coords, startIdx, endIdx) {
+    if (!Array.isArray(coords) || coords.length < 2) return 0;
+    const a = Math.max(0, Math.min(startIdx, endIdx));
+    const b = Math.min(coords.length - 1, Math.max(startIdx, endIdx));
+    let total = 0;
+    for (let i = a; i < b; i++) {
+        total += calculateDistanceMeters(coords[i].latitude, coords[i].longitude, coords[i + 1].latitude, coords[i + 1].longitude);
+    }
+    return total;
+}
+
+function computeSightingRelativeHint(sighting, route, coords) {
+    if (!sighting || typeof sighting.latitude !== 'number' || typeof sighting.longitude !== 'number') return '';
+    if (!Array.isArray(coords) || coords.length < 2) return '';
+
+    const gpsValid = window._lastKnownGpsLocation && (Date.now() - window._lastKnownGpsLocation.ts) < 180000
+        ? window._lastKnownGpsLocation : null;
+    const ref = gpsValid
+        || (window.currentSearchLocation && isInsideMazatlanClientCoords(window.currentSearchLocation.lat, window.currentSearchLocation.lng) ? window.currentSearchLocation : null)
+        || (window._lastFocusedRouteStop && Number(window._lastFocusedRouteStop.routeId) === Number(route.id) ? window._lastFocusedRouteStop : null);
+    if (!ref) return '';
+
+    const sightPt = findClosestPointOnRoute({ coordinatesList: coords }, sighting.latitude, sighting.longitude);
+    const userPt = findClosestPointOnRoute({ coordinatesList: coords }, ref.lat, ref.lng);
+    if (!sightPt || !userPt || sightPt.segIdx < 0 || userPt.segIdx < 0 || userPt.dist > 2500) return '';
+
+    const directGap = calculateDistanceMeters(sightPt.lat, sightPt.lng, userPt.lat, userPt.lng);
+    if (Math.abs(sightPt.segIdx - userPt.segIdx) <= 2 || directGap < 180) {
+        return 'muy cerca de tu punto';
+    }
+
+    if (!isRouteClosedLoop(coords)) {
+        const distM = computePolylineSegmentMeters(coords, sightPt.segIdx, userPt.segIdx);
+        return sightPt.segIdx < userPt.segIdx
+            ? `~${formatDistanceInfo(distM)} antes de tu punto`
+            : `ya pasó (~${formatDistanceInfo(distM)} después)`;
+    }
+
+    const totalM = computePolylineSegmentMeters(coords, 0, coords.length - 1);
+    const forwardM = sightPt.segIdx <= userPt.segIdx
+        ? computePolylineSegmentMeters(coords, sightPt.segIdx, userPt.segIdx)
+        : computePolylineSegmentMeters(coords, sightPt.segIdx, coords.length - 1) + computePolylineSegmentMeters(coords, 0, userPt.segIdx);
+    const behindM = Math.max(0, totalM - forwardM);
+    if (forwardM <= behindM) {
+        return `~${formatDistanceInfo(forwardM)} antes de tu punto`;
+    }
+    return `ya pasó (~${formatDistanceInfo(behindM)} después)`;
+}
+
+function updateDetailPulseActions(route, routeStops, coords = []) {
     const statusEl = document.getElementById('detail-sighting-status');
     const sightingBtn = document.getElementById('detail-sighting-btn');
     const shareBtn = document.getElementById('detail-share-btn');
@@ -4973,12 +5103,18 @@ function updateDetailPulseActions(route, routeStops) {
             if (s) {
                 const minsText = Number(s.minutesAgo) <= 0 ? 'menos de 1 min' : `${Number(s.minutesAgo)} min`;
                 const stopPart = s.stopName ? ` cerca de ${s.stopName}` : '';
-                statusEl.innerHTML = `<span class="pulse-live-dot-inline"></span> Visto hace ${escapeUserHtml(minsText)}${escapeUserHtml(stopPart)}`;
+                const relHint = computeSightingRelativeHint(s, route, coords);
+                const relPart = relHint ? ` · ${relHint}` : '';
+                const locateBtn = (typeof s.latitude === 'number' && typeof s.longitude === 'number')
+                    ? `<button type="button" class="pulse-locate-link" onclick="focusBusSightingOnMap(${Number(route.id)})">Ver punto</button>`
+                    : '';
+                statusEl.innerHTML = `<span class="pulse-live-dot-inline"></span> Visto hace ${escapeUserHtml(minsText)}${escapeUserHtml(stopPart)}${escapeUserHtml(relPart)}${locateBtn}`;
             } else {
                 statusEl.textContent = '¿Acabas de ver este camión? Avísale a otros pasajeros';
             }
         }
     };
+    window._refreshActiveSightingStatus = renderStatus;
     renderStatus();
 
     if (sightingBtn) {
@@ -4986,24 +5122,45 @@ function updateDetailPulseActions(route, routeStops) {
         sightingBtn.onclick = async () => {
             sightingBtn.disabled = true;
             try {
-                let nearStop = '';
-                if (window.currentSearchLocation && Array.isArray(routeStops) && routeStops.length > 0) {
-                    let bestD = Infinity;
-                    routeStops.forEach((rs) => {
-                        if (!rs.stop) return;
-                        const d = calculateDistanceMeters(
-                            window.currentSearchLocation.lat, window.currentSearchLocation.lng,
-                            rs.stop.latitude, rs.stop.longitude
-                        );
-                        if (d < bestD) { bestD = d; nearStop = rs.stop.name; }
-                    });
+                const loc = await resolveQuickSightingLocation(route.id);
+                let nearStop = (loc && loc.stopName) ? loc.stopName : '';
+                let postLat = null;
+                let postLng = null;
+                let dirHint = 'IDA';
+
+                if (loc) {
+                    const closest = findClosestPointOnRoute({ coordinatesList: coords, stopsList: routeStops }, loc.lat, loc.lng);
+                    if (closest && closest.dist <= 750 && closest.lat != null) {
+                        postLat = closest.lat;
+                        postLng = closest.lng;
+                        if (Array.isArray(coords) && coords.length > 4 && closest.segIdx > coords.length / 2) {
+                            dirHint = 'VUELTA';
+                        }
+                    } else if (!closest || closest.dist <= 3000) {
+                        postLat = loc.lat;
+                        postLng = loc.lng;
+                    }
+                    if (!nearStop && Array.isArray(routeStops) && routeStops.length > 0) {
+                        let bestD = 900;
+                        routeStops.forEach((rs) => {
+                            if (!rs.stop) return;
+                            const d = calculateDistanceMeters(loc.lat, loc.lng, rs.stop.latitude, rs.stop.longitude);
+                            if (d < bestD) { bestD = d; nearStop = rs.stop.name; }
+                        });
+                    }
                 }
-                const res = await Api.postBusSighting(route.id, route.name, 'IDA', nearStop);
+
+                const res = await Api.postBusSighting(route.id, route.name, dirHint, nearStop, postLat, postLng);
                 if (res && res.summary) {
                     PulseState.sightings[String(route.id)] = res.summary;
                 }
-                showToast(res.message || '¡Aviso publicado por 15 min!');
+                showToast(postLat != null
+                    ? '¡Aviso publicado por 15 min con punto en el mapa!'
+                    : (res.message || '¡Aviso publicado por 15 min!'));
                 renderStatus();
+                if (typeof renderPulseMarkers === 'function') {
+                    renderPulseMarkers(PulseState);
+                }
                 loadLivePulse();
             } catch (err) {
                 showToast(err.message || 'Espera un momento antes de reportar otra vez', 'error');

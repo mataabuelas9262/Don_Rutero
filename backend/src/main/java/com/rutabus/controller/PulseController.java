@@ -77,9 +77,11 @@ public class PulseController {
             String routeName = body.get("routeName") != null ? String.valueOf(body.get("routeName")) : null;
             String direction = body.get("direction") != null ? String.valueOf(body.get("direction")) : "IDA";
             String stopName = body.get("stopName") != null ? String.valueOf(body.get("stopName")) : "";
+            Double lat = (body.get("latitude") instanceof Number n) ? n.doubleValue() : null;
+            Double lng = (body.get("longitude") instanceof Number n) ? n.doubleValue() : null;
 
             Map<String, Object> res = communityPulseService.recordBusSighting(
-                    routeId, routeName, direction, stopName, resolveReporterKey(req));
+                    routeId, routeName, direction, stopName, lat, lng, resolveReporterKey(req));
             if (Boolean.TRUE.equals(res.get("rateLimited"))) {
                 return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(res);
             }

@@ -41,13 +41,18 @@ public class CommunityPulseService {
         final String routeName;
         final String direction;
         final String stopName;
+        final Double latitude;
+        final Double longitude;
         final long timestampMs;
 
-        SightingEntry(String reporterKey, String routeName, String direction, String stopName, long timestampMs) {
+        SightingEntry(String reporterKey, String routeName, String direction, String stopName,
+                      Double latitude, Double longitude, long timestampMs) {
             this.reporterKey = reporterKey;
             this.routeName = routeName;
             this.direction = direction;
             this.stopName = stopName;
+            this.latitude = latitude;
+            this.longitude = longitude;
             this.timestampMs = timestampMs;
         }
     }
@@ -112,7 +117,8 @@ public class CommunityPulseService {
     }
 
     public Map<String, Object> recordBusSighting(
-            Long routeId, String routeName, String direction, String stopName, String reporterKey) {
+            Long routeId, String routeName, String direction, String stopName,
+            Double lat, Double lng, String reporterKey) {
         if (routeId == null || routeId <= 0) {
             throw new IllegalArgumentException("routeId inválido.");
         }
@@ -122,6 +128,15 @@ public class CommunityPulseService {
                 ? "VUELTA" : "IDA";
         String safeStop = sanitizeText(stopName, 120, "");
         String safeReporter = sanitizeText(reporterKey, 80, "anon");
+
+        Double safeLat = null;
+        Double safeLng = null;
+        if (lat != null && lng != null && Double.isFinite(lat) && Double.isFinite(lng)
+                && lat >= TrafficService.MIN_LAT && lat <= TrafficService.MAX_LAT
+                && lng >= TrafficService.MIN_LNG && lng <= TrafficService.MAX_LNG) {
+            safeLat = Math.round(lat * 1_000_000.0) / 1_000_000.0;
+            safeLng = Math.round(lng * 1_000_000.0) / 1_000_000.0;
+        }
 
         List<SightingEntry> list = sightingsByRoute.computeIfAbsent(routeId,
                 k -> Collections.synchronizedList(new ArrayList<>()));
@@ -137,7 +152,7 @@ public class CommunityPulseService {
                     );
                 }
             }
-            list.add(new SightingEntry(safeReporter, safeName, safeDir, safeStop, now));
+            list.add(new SightingEntry(safeReporter, safeName, safeDir, safeStop, safeLat, safeLng, now));
             if (list.size() > 30) {
                 list.remove(0);
             }
@@ -644,11 +659,14 @@ public class CommunityPulseService {
         long minutesAgo = Math.max(0L, (nowMs - latest.timestampMs) / 60_000L);
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("routeId", routeId);
+        summary.put("routeName", latest.routeName);
         summary.put("count", list.size());
         summary.put("lastTimestampMs", latest.timestampMs);
         summary.put("minutesAgo", minutesAgo);
         summary.put("direction", latest.direction);
         summary.put("stopName", latest.stopName);
+        summary.put("latitude", latest.latitude);
+        summary.put("longitude", latest.longitude);
         return summary;
     }
 

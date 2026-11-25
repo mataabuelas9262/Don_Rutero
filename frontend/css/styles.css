@@ -3644,6 +3644,36 @@ body:has(.sidebar.collapsed) .city-live-banner {
 .pulse-pin-badge.is-confirmed {
     background: var(--pin-color, #DC2626);
 }
+.pulse-sighting-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #FFFFFF;
+    color: #065F46;
+    border: 2px solid #059669;
+    font-size: 0.7rem;
+    font-weight: 800;
+    white-space: nowrap;
+    box-shadow: 0 3px 10px rgba(15, 23, 42, 0.25);
+    transform: translate(-50%, -50%);
+}
+.pulse-sighting-pill.is-focused {
+    background: #059669;
+    color: #FFFFFF;
+    border-color: #FFFFFF;
+}
+.pulse-locate-link {
+    background: none;
+    border: none;
+    padding: 0 0 0 6px;
+    color: #047857;
+    font-size: 0.73rem;
+    font-weight: 700;
+    text-decoration: underline;
+    cursor: pointer;
+}
 
 @media (max-width: 768px) {
     .city-live-banner {

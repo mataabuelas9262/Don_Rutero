@@ -43,7 +43,7 @@ class PulseControllerIntegrationTest {
 
     @Test
     void sightingIncidentAutoEscalateAndCommunityClearFlow() throws Exception {
-        // 1. Avistamiento de camión ("¡Vi pasar este camión!")
+        // 1. Avistamiento de camión ("¡Vi pasar este camión!") con coordenadas de Mazatlán
         mockMvc.perform(post("/api/pulse/sightings")
                         .with(req -> { req.setRemoteAddr("10.0.0.10"); return req; })
                         .contentType(MediaType.APPLICATION_JSON)
@@ -51,15 +51,36 @@ class PulseControllerIntegrationTest {
                                 "routeId", 1,
                                 "routeName", "Sábalo Centro",
                                 "direction", "IDA",
-                                "stopName", "Acuario"
+                                "stopName", "Acuario",
+                                "latitude", 23.2279,
+                                "longitude", -106.4275
                         ))))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.summary.count", is(1)))
-                .andExpect(jsonPath("$.summary.stopName", is("Acuario")));
+                .andExpect(jsonPath("$.summary.stopName", is("Acuario")))
+                .andExpect(jsonPath("$.summary.latitude", closeTo(23.2279, 0.0001)))
+                .andExpect(jsonPath("$.summary.longitude", closeTo(-106.4275, 0.0001)));
 
         mockMvc.perform(get("/api/pulse/live"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.sightingsByRoute['1'].count", is(1)));
+                .andExpect(jsonPath("$.sightingsByRoute['1'].count", is(1)))
+                .andExpect(jsonPath("$.sightingsByRoute['1'].latitude", closeTo(23.2279, 0.0001)));
+
+        // Coordenadas fuera de Mazatlán deben descartarse como null sin romper el reporte
+        mockMvc.perform(post("/api/pulse/sightings")
+                        .with(req -> { req.setRemoteAddr("10.0.0.11"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "routeId", 2,
+                                "routeName", "Pradera Directo",
+                                "direction", "VUELTA",
+                                "stopName", "",
+                                "latitude", 51.5,
+                                "longitude", -0.12
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.summary.latitude").value(nullValue()))
+                .andExpect(jsonPath("$.summary.longitude").value(nullValue()));
 
         // 2. Anti-spam: 3 reportes de bloqueo de la MISMA persona/IP no deben auto-escalar (se queda en 1/3)
         String incidentPayload = objectMapper.writeValueAsString(Map.of(
