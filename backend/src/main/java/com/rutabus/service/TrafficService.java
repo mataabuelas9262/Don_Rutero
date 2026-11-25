@@ -402,31 +402,24 @@ public class TrafficService {
         double tourist = 0.90;
 
         if (!isWeekend && mins >= 420 && mins < 540) {
-            // 7:00 - 9:00 AM entrada escuelas/trabajo
             urban = 0.64;
             tourist = 0.78;
         } else if (mins >= 780 && mins < 915) {
-            // 1:00 - 3:15 PM hora de comida / salida escolar
             urban = 0.68;
             tourist = 0.74;
         } else if (mins >= 1050 && mins < 1200) {
-            // 5:30 - 8:00 PM pico tarde / Malecón y Zona Dorada
             urban = isWeekend ? 0.76 : 0.63;
             tourist = isWeekend ? 0.56 : 0.62;
         } else if (isWeekend && mins >= 1200 && mins < 1350) {
-            // Viernes/Sábado/Domingo noche en Malecón y Zona Dorada (8:00 - 10:30 PM)
             urban = 0.84;
             tourist = 0.64;
         } else if (mins >= 540 && mins < 780) {
-            // Mañana media (9:00 AM - 1:00 PM)
             urban = 0.85;
             tourist = 0.84;
         } else if (mins >= 915 && mins < 1050) {
-            // Media tarde (3:15 - 5:30 PM)
             urban = 0.82;
             tourist = 0.78;
         } else {
-            // Madrugada / noche tarde
             urban = 0.98;
             tourist = 0.96;
         }

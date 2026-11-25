@@ -25,11 +25,9 @@ function safeMapColor(color, fallback = '#475569') {
     return /^#[0-9a-fA-F]{3,8}$/.test(val) ? val : fallback;
 }
 
-// Inicializa el mapa
 function initLeafletMap(containerId) {
     if (mapInstance) return mapInstance;
 
-    // Crear mapa centrado en Mazatlán (preferCanvas + opciones de rueda/inercia para zoom/paneo a 60 FPS)
     mapInstance = L.map(containerId, {
         preferCanvas: true,
         zoomControl: false,
@@ -45,10 +43,8 @@ function initLeafletMap(containerId) {
     
     mapInstance.setView(MAP_CENTER, DEFAULT_ZOOM);
 
-    // Añadir control de zoom en la esquina superior izquierda
     L.control.zoom({ position: 'topleft' }).addTo(mapInstance);
 
-    // Capa base OpenStreetMap optimizada (keepBuffer evita recargas al panear; updateWhenZooming evita micro-tirones al hacer zoom)
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxNativeZoom: 19,
@@ -602,7 +598,7 @@ function getCachedPhysicalStopIcon(config) {
     return icon;
 }
 
-// Carga y dibuja todas las paradas físicas del sistema (con clustering + iconos SVG cacheados + popups perezosos)
+// Carga y dibuja todas las paradas físicas
 async function loadAllPhysicalStopsOnMap(prefetchedStops = null) {
     try {
         const targetLayer = getOrResetPhysicalStopsLayer();

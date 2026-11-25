@@ -4426,7 +4426,6 @@ function startOnboardGpsWatch() {
         },
         { enableHighAccuracy: true, maximumAge: 4000, timeout: 7000 }
     );
-    // Sondeo de respaldo para forzar lecturas más frecuentes en segundo plano si watchPosition se pausa
     onboardState.bgPollTimerId = setInterval(() => {
         if (!onboardState.active || onboardState.source !== 'gps') return;
         const lastAge = onboardState.lastGpsFix ? (Date.now() - onboardState.lastGpsFix.tsMs) : Infinity;
@@ -4832,7 +4831,6 @@ function computeRouteTrafficMetrics(travelCoords, busMeters) {
     if (matchedSamples > 0) {
         const matchedAvg = weightedSpeedSum / matchedSamples;
         const matchedFree = weightedFreeSum / matchedSamples;
-        // Mezcla con velocidad urbana base si solo un tramo corto coincidió con corredor
         const coverage = Math.min(1, matchedSamples / 5);
         effectiveKmh = matchedAvg * coverage + (Number(data.avgBusSpeedKmh) || baseBusKmh) * (1 - coverage);
         freeKmh = matchedFree * coverage + 23.5 * (1 - coverage);
@@ -4938,9 +4936,7 @@ async function loadLivePulse() {
         if (typeof window._refreshActiveSightingStatus === 'function') {
             window._refreshActiveSightingStatus();
         }
-        // Actualizar chips "Pasó hace X min" si la lista de rutas está visible
         if (currentFilter !== 'guias' && Array.isArray(allRoutes) && allRoutes.length > 0 && !document.getElementById('detail-panel')?.classList.contains('visible')) {
-            // Refresco ligero en badges existentes sin reconstruir innecesariamente si coincide DOM
             document.querySelectorAll('.route-card[data-id]').forEach((card) => {
                 const rid = card.getAttribute('data-id');
                 const sub = card.querySelector('.route-submeta');
@@ -5573,7 +5569,7 @@ function shareTripOption(idx) {
 window.shareTripOption = shareTripOption;
 
 // ----------------------------------------------------------
-// ALARMA DE BAJADA + CÁPSULA FLOTANTE Y SEGUNDO PLANO (VOY A BORDO)
+// ALARMA DE BAJADA Y NOTIFICACIÓN EN BARRA (VOY A BORDO)
 // ----------------------------------------------------------
 function toggleOnboardAlarm() {
     onboardState.alarmEnabled = !onboardState.alarmEnabled;
@@ -5649,7 +5645,6 @@ function buildOnboardNotifRoundIconUrl(routeColor) {
         ctx.arc(64, 64, 58, 0, Math.PI * 2);
         ctx.fill();
 
-        // Silueta blanca del camion (sin degradados)
         ctx.fillStyle = '#FFFFFF';
         ctx.beginPath();
         ctx.roundRect(38, 30, 52, 50, 10);
@@ -5694,13 +5689,11 @@ function buildOnboardNotifBannerDataUrl(snap) {
         const fillBarColor = snap.isNearAction && !snap.isArrived ? '#DC2626' : '#10B981';
         const pct = Math.max(0, Math.min(100, Number(snap.pct || 0)));
 
-        // Fondo blanco plano sólido + franja superior de color real de la ruta
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, W, H);
         ctx.fillStyle = accentColor;
         ctx.fillRect(0, 0, W, 6);
 
-        // Fila 1: Estado + Ruta a la izquierda, Pill ETA sólido a la derecha
         ctx.fillStyle = fillBarColor;
         ctx.beginPath();
         ctx.arc(30, 34, 5.5, 0, Math.PI * 2);
@@ -5729,7 +5722,6 @@ function buildOnboardNotifBannerDataUrl(snap) {
         ctx.fillText(etaText, pillX + etaW / 2, 40);
         ctx.textAlign = 'left';
 
-        // Fila 2: Bajada a la izquierda, distancia + % a la derecha
         const rightMeta = `${formatOnboardDistance(snap.remainToActionM || 0)} · ${Math.round(pct)}%`;
         ctx.font = '700 18px system-ui, -apple-system, Roboto, sans-serif';
         const rightW = ctx.measureText(rightMeta).width;
@@ -5748,7 +5740,6 @@ function buildOnboardNotifBannerDataUrl(snap) {
         }
         ctx.fillText(clippedDest, 22, 84);
 
-        // Barra sólida de progreso (#E2E8F0 track + #10B981 fill)
         const trackX = 22;
         const trackY = 104;
         const trackW = W - 44;
@@ -5764,7 +5755,6 @@ function buildOnboardNotifBannerDataUrl(snap) {
         ctx.roundRect(trackX, trackY, Math.min(trackW, fillW), trackH, 6);
         ctx.fill();
 
-        // Etiquetas inferiores
         ctx.fillStyle = '#64748B';
         ctx.font = '600 15px system-ui, -apple-system, Roboto, sans-serif';
         ctx.fillText('Subida', trackX, 144);
