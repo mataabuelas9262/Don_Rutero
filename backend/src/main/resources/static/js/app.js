@@ -425,6 +425,9 @@ function renderRoutes(routes, options = {}) {
 // ----------------------------------------------------------
 
 async function selectRoute(routeId, cardElement) {
+    if (typeof confirmStoppingActiveOnboardTrip === 'function' && !confirmStoppingActiveOnboardTrip('cambiar de ruta')) {
+        return;
+    }
     document.querySelectorAll('.route-card').forEach(c => c.classList.remove('active'));
     if (cardElement) cardElement.classList.add('active');
 
@@ -1873,6 +1876,9 @@ function switchSidebarMode(mode) {
     const detailPanel = document.getElementById('detail-panel');
     
     if (mode === 'rutas') {
+        if (typeof confirmStoppingActiveOnboardTrip === 'function' && !confirmStoppingActiveOnboardTrip('explorar otras rutas')) {
+            return;
+        }
         cancelTripMapPickMode();
         if (typeof stopOnboardTrip === 'function') stopOnboardTrip({ silent: true });
         if (tabRutas) tabRutas.classList.add('active');
@@ -3936,6 +3942,7 @@ const onboardState = {
     busMarker: null,
     notifiedNearLeg: false,
     notifiedNearEnd: false,
+    notifiedFarFromRoute: false,
     corridorTrafficSpeedKmh: 22,
     liveBusSpeedKmh: null,
     lastGpsFix: null,
@@ -4314,11 +4321,32 @@ function setOnboardWaitingGpsHud(message) {
     syncOnboardHudViewportOffset();
 }
 
+function confirmStoppingActiveOnboardTrip(actionLabel = 'cambiar de ruta') {
+    if (!onboardState.active) return true;
+    if (onboardState.currentDistM >= Math.max(0, onboardState.totalDistM - 35)) return true;
+    const activeRoute = document.getElementById('onboard-route-name')?.textContent || 'tu ruta actual';
+    return window.confirm(`Vas a bordo de "${activeRoute}". ¿Deseas finalizar este seguimiento para ${actionLabel}?`);
+}
+
 function processOnboardGpsPosition(pos) {
     if (!onboardState.active || onboardState.source !== 'gps' || !pos || !pos.coords) return;
     const { latitude, longitude, speed } = pos.coords;
+    const distMazatlan = calculateDistanceMeters(latitude, longitude, 23.2329, -106.4062);
+    if (distMazatlan > 60000) {
+        if (!onboardState.notifiedFarFromRoute) {
+            onboardState.notifiedFarFromRoute = true;
+            showToast('Tu GPS ubicó fuera de Mazatlán; el seguimiento en ruta requiere estar dentro de la ciudad.', 'error');
+        }
+        setOnboardWaitingGpsHud('GPS fuera de Mazatlán');
+        return;
+    }
+
     const nowMs = Date.now();
     const proj = projectCoordOntoJourney(latitude, longitude);
+    if (proj.offsetM > 8000 && !onboardState.notifiedFarFromRoute) {
+        onboardState.notifiedFarFromRoute = true;
+        showToast(`Tu ubicación está lejos de esta ruta (${formatOnboardDistance(proj.offsetM)}).`);
+    }
 
     let measuredKmh = null;
     if (typeof speed === 'number' && isFinite(speed) && speed >= 0.6 && speed <= 20) {
@@ -4417,6 +4445,9 @@ function startOnboardGpsWatch() {
 function startOnboardTrip(optionIdx) {
     const opt = window._tripComputedOptions && window._tripComputedOptions[optionIdx];
     if (!opt) return;
+    if (onboardState.active && !confirmStoppingActiveOnboardTrip('cambiar al nuevo recorrido')) {
+        return;
+    }
 
     viewTripOptionOnMap(opt);
     const journey = buildOnboardJourneyData(opt);
@@ -4442,6 +4473,7 @@ function startOnboardTrip(optionIdx) {
     onboardState.source = initialSource;
     onboardState.notifiedNearLeg = false;
     onboardState.notifiedNearEnd = false;
+    onboardState.notifiedFarFromRoute = false;
     onboardState.corridorTrafficSpeedKmh = (opt.trafficInfo && opt.trafficInfo.effectiveSpeedKmh)
         ? opt.trafficInfo.effectiveSpeedKmh
         : 22;
