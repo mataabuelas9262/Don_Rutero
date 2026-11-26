@@ -508,9 +508,24 @@ async function selectRoute(routeId, cardElement) {
     }
 }
 
+function resetSidebarScrollTop(topPx = 0) {
+    const sc = document.querySelector('.sidebar-content');
+    if (!sc) return;
+    sc.scrollTop = topPx;
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+            sc.scrollTop = topPx;
+        });
+    }
+}
+
 function showDetailPanel(route, routeStops, proximityInfo = null, coords = null) {
     const detailPanel = document.getElementById('detail-panel');
     const mainList = document.getElementById('main-list-section');
+    const sc = document.querySelector('.sidebar-content');
+    if (sc && mainList && mainList.style.display !== 'none') {
+        window._savedRouteListScrollTop = sc.scrollTop;
+    }
     mainList.style.display = 'none';
 
     const title = document.getElementById('detail-title');
@@ -597,6 +612,7 @@ function showDetailPanel(route, routeStops, proximityInfo = null, coords = null)
     }
 
     detailPanel.classList.add('visible');
+    resetSidebarScrollTop(0);
 }
 
 function closeDetailPanel() {
@@ -604,6 +620,9 @@ function closeDetailPanel() {
     window._refreshActiveSightingStatus = null;
     document.getElementById('detail-panel').classList.remove('visible');
     document.getElementById('main-list-section').style.display = 'flex';
+    const restoreScroll = Number.isFinite(window._savedRouteListScrollTop) ? window._savedRouteListScrollTop : 0;
+    window._savedRouteListScrollTop = null;
+    resetSidebarScrollTop(restoreScroll);
     document.querySelectorAll('.route-card').forEach(c => c.classList.remove('active'));
     clearMapDrawings();
     if (typeof renderPulseMarkers === 'function' && typeof PulseState !== 'undefined') {
@@ -1890,6 +1909,7 @@ function switchSidebarMode(mode) {
         if (!detailPanel || !detailPanel.classList.contains('visible')) {
             clearTripMapMarkers();
             clearMapDrawings();
+            resetSidebarScrollTop(0);
         }
     } else {
         if (tabPlan) tabPlan.classList.add('active');
@@ -1897,6 +1917,7 @@ function switchSidebarMode(mode) {
         if (secPlan) secPlan.style.display = 'flex';
         if (secRutas) secRutas.style.display = 'none';
         if (detailPanel) detailPanel.classList.remove('visible');
+        resetSidebarScrollTop(0);
         if (isMobileViewport() && mobileSheetState === 'peek') {
             setMobileSheetState('half');
         }
