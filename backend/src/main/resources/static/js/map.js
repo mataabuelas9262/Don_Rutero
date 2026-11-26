@@ -646,14 +646,20 @@ let pulseIncidentGroup = null;
 let pulseSightingGroup = null;
 const pulseSightingMarkersByRouteId = new Map();
 
-function getIncidentIconMeta(type) {
+function getIncidentIconMeta(type, typeLabel) {
     const alertSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
     const dropSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path></svg>';
     const banSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>';
-    if (type === 'inundacion') return { svg: dropSvg, color: '#0284C7', label: 'Calle inundada' };
-    if (type === 'desvio') return { svg: alertSvg, color: '#D97706', label: 'Desvío reportado' };
-    if (type === 'sin_servicio') return { svg: banSvg, color: '#DC2626', label: 'Sin paso reportado' };
-    return { svg: alertSvg, color: '#DC2626', label: 'Bloqueo reportado' };
+    if (type === 'inundacion') return { svg: dropSvg, color: '#0284C7', label: typeLabel || 'Calle inundada' };
+    if (type === 'accidente') return { svg: alertSvg, color: '#DC2626', label: typeLabel || 'Accidente vial' };
+    if (type === 'obras') return { svg: alertSvg, color: '#D97706', label: typeLabel || 'Obras / Bacheo' };
+    if (type === 'desvio') return { svg: alertSvg, color: '#D97706', label: typeLabel || 'Desvío reportado' };
+    if (type === 'trafico_pesado') return { svg: alertSvg, color: '#D97706', label: typeLabel || 'Tráfico muy lento' };
+    if (type === 'marcha_evento') return { svg: alertSvg, color: '#D97706', label: typeLabel || 'Marcha / Evento' };
+    if (type === 'unidad_averiada') return { svg: alertSvg, color: '#D97706', label: typeLabel || 'Camión descompuesto' };
+    if (type === 'sin_servicio') return { svg: banSvg, color: '#DC2626', label: typeLabel || 'Sin paso reportado' };
+    if (type === 'otro') return { svg: alertSvg, color: '#D97706', label: typeLabel || 'Incidente reportado' };
+    return { svg: alertSvg, color: '#DC2626', label: typeLabel || 'Bloqueo reportado' };
 }
 
 function renderPulseMarkers(pulseData) {
@@ -709,7 +715,8 @@ function renderPulseMarkers(pulseData) {
 
     incidents.forEach((inc) => {
         if (typeof inc.latitude !== 'number' || typeof inc.longitude !== 'number') return;
-        const meta = getIncidentIconMeta(inc.type);
+        const meta = getIncidentIconMeta(inc.type, inc.typeLabel);
+        const clearKey = inc.incidentKey || inc.zoneKey || '';
         const key = `${inc.latitude.toFixed(4)},${inc.longitude.toFixed(4)}`;
         drawnCoords.add(key);
         const confirmed = Boolean(inc.escalated);
@@ -729,7 +736,7 @@ function renderPulseMarkers(pulseData) {
                 <span style="display:inline-block;font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:999px;background:${meta.color}18;color:${meta.color};margin-bottom:4px;">${escapeMapHtml(badgeText)}</span>
                 <h4 style="margin:0 0 4px 0;font-size:0.9rem;color:#0F172A;">${escapeMapHtml(meta.label)} · ${escapeMapHtml(inc.zoneLabel || '')}</h4>
                 <p style="margin:0 0 8px 0;font-size:0.78rem;color:#475569;">${escapeMapHtml(inc.description || '')}</p>
-                <button type="button" onclick="confirmZoneClearFromUi('${escapeMapHtml(inc.zoneKey || '')}')" style="width:100%;padding:6px 8px;border:1px solid #10B981;background:#ECFDF5;color:#047857;border-radius:6px;font-weight:700;font-size:0.76rem;cursor:pointer;">Ya está todo bien</button>
+                <button type="button" onclick="confirmZoneClearFromUi('${escapeMapHtml(clearKey)}')" style="width:100%;padding:6px 8px;border:1px solid #10B981;background:#ECFDF5;color:#047857;border-radius:6px;font-weight:700;font-size:0.76rem;cursor:pointer;">Ya está todo bien</button>
             </div>
         `);
         pulseIncidentGroup.addLayer(m);

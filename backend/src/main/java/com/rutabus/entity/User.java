@@ -3,6 +3,9 @@ package com.rutabus.entity;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
 @Entity
 @Table(name = "users")
 public class User {
@@ -25,6 +28,10 @@ public class User {
     @Column(nullable = false, length = 20)
     private String role; // ROLE_USER or ROLE_ADMIN
 
+    @JsonIgnore
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
     public User() {
     }
 
@@ -34,6 +41,13 @@ public class User {
         this.email = email;
         this.password = password;
         this.role = role;
+    }
+
+    @PrePersist
+    protected void onCreate() {
+        if (this.createdAt == null) {
+            this.createdAt = LocalDateTime.now(ZoneOffset.UTC);
+        }
     }
 
     public Long getId() {
@@ -74,5 +88,13 @@ public class User {
 
     public void setRole(String role) {
         this.role = role;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
     }
 }

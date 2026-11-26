@@ -104,6 +104,7 @@ public class PulseController {
         }
         try {
             String type = body.get("type") != null ? String.valueOf(body.get("type")) : "bloqueo";
+            String customType = body.get("customType") != null ? String.valueOf(body.get("customType")) : "";
             String zoneKey = body.get("zoneKey") != null ? String.valueOf(body.get("zoneKey")) : "";
             String zoneLabel = body.get("zoneLabel") != null ? String.valueOf(body.get("zoneLabel")) : "";
             String description = body.get("description") != null ? String.valueOf(body.get("description")) : "";
@@ -111,8 +112,22 @@ public class PulseController {
             Double lng = (body.get("longitude") instanceof Number n) ? n.doubleValue() : null;
 
             Map<String, Object> res = communityPulseService.reportIncident(
-                    type, zoneKey, zoneLabel, description, lat, lng, resolveReporterKey(req));
+                    type, customType, zoneKey, zoneLabel, description, lat, lng, resolveReporterKey(req));
             return ResponseEntity.status(HttpStatus.CREATED).body(res);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/incidents/{incidentKey}/confirm")
+    public ResponseEntity<?> confirmExistingIncident(@PathVariable String incidentKey, HttpServletRequest req) {
+        if (isWriteRateLimited(req)) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Demasiados reportes seguidos. Espera un momento."));
+        }
+        try {
+            return ResponseEntity.ok(communityPulseService.confirmExistingIncident(
+                    incidentKey, resolveReporterKey(req)));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

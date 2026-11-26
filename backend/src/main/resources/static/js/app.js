@@ -5323,10 +5323,20 @@ const ZONE_CENTER_PRESETS = {
     buelna: { label: 'Av. Rafael Buelna', lat: 23.2442, lng: -106.4345 },
     ejercito: { label: 'Av. Ejército Mexicano', lat: 23.2285, lng: -106.4205 },
     insurgentes: { label: 'Av. Insurgentes', lat: 23.2318, lng: -106.4092 },
-    sabalo: { label: 'Zona Dorada / Sábalo', lat: 23.2555, lng: -106.4581 },
+    sabalo: { label: 'Zona Dorada / Sábalo', lat: 23.2655, lng: -106.4648 },
     leyva: { label: 'Av. Gabriel Leyva', lat: 23.2148, lng: -106.4060 },
-    centro: { label: 'Centro / Mercado', lat: 23.2041, lng: -106.4218 },
-    colosio: { label: 'Blvd. Colosio', lat: 23.2452, lng: -106.3953 }
+    centro: { label: 'Centro / Mercado Pino Suárez', lat: 23.2041, lng: -106.4218 },
+    colosio: { label: 'Blvd. Colosio', lat: 23.2452, lng: -106.3953 },
+    mex15: { label: 'Carretera Internacional / MEX 15', lat: 23.2585, lng: -106.4182 },
+    marina: { label: 'Av. de la Marina', lat: 23.2758, lng: -106.4487 },
+    cerritos: { label: 'Cerritos / Av. Sábalo Cerritos', lat: 23.2725, lng: -106.4665 },
+    reforma: { label: 'Av. Reforma / Gran Plaza', lat: 23.2401, lng: -106.4367 },
+    gutierrez_najera: { label: 'Av. Gutiérrez Nájera', lat: 23.2111, lng: -106.4199 },
+    munich: { label: 'Av. Múnich / Juan Pablo II', lat: 23.2545, lng: -106.3940 },
+    juarez: { label: 'Col. Benito Juárez', lat: 23.2295, lng: -106.4054 },
+    pradera_dorada: { label: 'Pradera Dorada / Villa Verde', lat: 23.2682, lng: -106.3745 },
+    urias: { label: 'Urías / Sur', lat: 23.2175, lng: -106.3765 },
+    escobosa: { label: 'Av. Óscar Pérez Escobosa', lat: 23.2923, lng: -106.4524 }
 };
 
 const PulseState = {
@@ -5429,15 +5439,22 @@ function updateNotificationsBadgeAndFeed() {
         if (pendingIncidents.length === 0) {
             incList.innerHTML = '';
         } else {
-            incList.innerHTML = pendingIncidents.map((inc) => `
+            incList.innerHTML = pendingIncidents.map((inc) => {
+                const actionKey = inc.incidentKey || inc.zoneKey;
+                const typeTag = inc.typeLabel ? `<span>${escapeUserHtml(inc.typeLabel)}</span> · ` : '';
+                return `
                 <div class="pulse-pending-item">
                     <div style="min-width:0;">
-                        <strong>${escapeUserHtml(inc.zoneLabel)}</strong> · ${escapeUserHtml(inc.description)}
+                        <strong>${escapeUserHtml(inc.zoneLabel)}</strong> · ${typeTag}${escapeUserHtml(inc.description)}
                         <span class="pulse-progress-pill">${Number(inc.distinctReporters)}/${Number(inc.threshold || 3)}</span>
                     </div>
-                    <button type="button" class="pulse-mini-link" onclick="confirmZoneClearFromUi('${escapeUserHtml(inc.zoneKey)}')">Ya está libre</button>
+                    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                        <button type="button" class="pulse-mini-link" onclick="confirmIncidentMatchFromUi('${escapeUserHtml(actionKey)}')">+1 Yo igual</button>
+                        <button type="button" class="pulse-mini-link" onclick="confirmZoneClearFromUi('${escapeUserHtml(actionKey)}')">Ya está libre</button>
+                    </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
     }
 }
@@ -5473,14 +5490,25 @@ async function confirmNoticeClearFromUi(noticeId) {
     }
 }
 
-async function confirmZoneClearFromUi(zoneKey) {
-    if (!zoneKey) return;
+async function confirmZoneClearFromUi(zoneOrIncidentKey) {
+    if (!zoneOrIncidentKey) return;
     try {
-        const res = await Api.clearZoneIncident(zoneKey);
+        const res = await Api.clearZoneIncident(zoneOrIncidentKey);
         showToast(res.message || 'Confirmación enviada');
         await loadLivePulse();
     } catch (err) {
         showToast(err.message || 'No se pudo confirmar despeje', 'error');
+    }
+}
+
+async function confirmIncidentMatchFromUi(incidentKey) {
+    if (!incidentKey) return;
+    try {
+        const res = await Api.confirmPulseIncident(incidentKey);
+        showToast(res.message || 'Confirmación registrada');
+        await loadLivePulse();
+    } catch (err) {
+        showToast(err.message || 'No se pudo confirmar el reporte', 'error');
     }
 }
 
@@ -5681,6 +5709,8 @@ function initCommunityPulse() {
 
     const toggleFormBtn = document.getElementById('toggle-pulse-incident-form');
     const incForm = document.getElementById('pulse-incident-form');
+    const typeSel = document.getElementById('pulse-inc-type');
+    const customTypeIn = document.getElementById('pulse-inc-custom-type');
     const zoneSel = document.getElementById('pulse-inc-zone');
     const customZoneIn = document.getElementById('pulse-inc-custom-zone');
 
@@ -5691,35 +5721,55 @@ function initCommunityPulse() {
             toggleFormBtn.textContent = visible ? '+ Reportar ahora' : 'Cerrar';
         });
     }
+    if (typeSel && customTypeIn) {
+        typeSel.addEventListener('change', () => {
+            customTypeIn.style.display = typeSel.value === 'otro' ? 'block' : 'none';
+            if (typeSel.value === 'otro') customTypeIn.focus();
+        });
+    }
     if (zoneSel && customZoneIn) {
         zoneSel.addEventListener('change', () => {
             customZoneIn.style.display = zoneSel.value === 'custom' ? 'block' : 'none';
+            if (zoneSel.value === 'custom') customZoneIn.focus();
         });
     }
     if (incForm) {
         incForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const type = document.getElementById('pulse-inc-type')?.value || 'bloqueo';
+            const type = typeSel?.value || 'bloqueo';
+            const customType = customTypeIn?.value.trim() || '';
             const zoneVal = zoneSel?.value || 'malecon';
             const customLabel = customZoneIn?.value.trim() || '';
             const desc = document.getElementById('pulse-inc-desc')?.value.trim() || '';
 
+            if (type === 'otro' && !customType) {
+                showToast('Escribe qué incidente está pasando en la calle.', 'error');
+                customTypeIn?.focus();
+                return;
+            }
             const preset = ZONE_CENTER_PRESETS[zoneVal];
             const zoneKey = zoneVal === 'custom' ? customLabel : zoneVal;
             const zoneLabel = zoneVal === 'custom' ? customLabel : (preset ? preset.label : zoneVal);
             if (!zoneKey) {
-                showToast('Escribe la calle o colonia afectada.', 'error');
+                showToast('Escribe la avenida, calle o colonia afectada.', 'error');
+                customZoneIn?.focus();
                 return;
             }
+            const recentGps = (window._lastKnownGpsLocation && (Date.now() - window._lastKnownGpsLocation.ts) < 180000
+                && isInsideMazatlanClientCoords(window._lastKnownGpsLocation.lat, window._lastKnownGpsLocation.lng))
+                ? window._lastKnownGpsLocation : null;
             const center = (mapInstance && typeof mapInstance.getCenter === 'function') ? mapInstance.getCenter() : null;
-            const lat = preset ? preset.lat : (center ? center.lat : null);
-            const lng = preset ? preset.lng : (center ? center.lng : null);
+            const centerInside = center && isInsideMazatlanClientCoords(center.lat, center.lng) ? center : null;
+            const lat = preset ? preset.lat : (recentGps ? recentGps.lat : (centerInside ? centerInside.lat : null));
+            const lng = preset ? preset.lng : (recentGps ? recentGps.lng : (centerInside ? centerInside.lng : null));
 
             try {
                 const res = await Api.postPulseIncident({
-                    type, zoneKey, zoneLabel, description: desc, latitude: lat, longitude: lng
+                    type, customType, zoneKey, zoneLabel, description: desc, latitude: lat, longitude: lng
                 });
                 showToast(res.message || 'Reporte enviado');
+                if (customTypeIn) customTypeIn.value = '';
+                if (customZoneIn) customZoneIn.value = '';
                 if (document.getElementById('pulse-inc-desc')) document.getElementById('pulse-inc-desc').value = '';
                 incForm.style.display = 'none';
                 if (toggleFormBtn) toggleFormBtn.textContent = '+ Reportar ahora';

@@ -215,4 +215,131 @@ class PulseControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.activeNotices[?(@.id == " + falseNoticeId + ")]", hasSize(0)));
     }
+
+    @Test
+    void similarityMatchingCustomTypeAndZonesPreventFalseEscalation() throws Exception {
+        // 1. Reportes "otro" completamente distintos en la misma zona NO deben mezclarse ni escalar a 3/3
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.10.1"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "otro",
+                                "customType", "Fuga de agua",
+                                "zoneKey", "centro",
+                                "zoneLabel", "Centro",
+                                "description", "Fuga grande en Aquiles Serdán"
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(1)))
+                .andExpect(jsonPath("$.escalated", is(false)));
+
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.10.2"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "otro",
+                                "customType", "Cable caído",
+                                "zoneKey", "centro",
+                                "zoneLabel", "Centro",
+                                "description", "Poste con cable tirado cerca del mercado"
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(1)))
+                .andExpect(jsonPath("$.escalated", is(false)));
+
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.10.3"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "otro",
+                                "customType", "Árbol caído",
+                                "zoneKey", "centro",
+                                "zoneLabel", "Centro",
+                                "description", "Rama caída en Olas Altas"
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(1)))
+                .andExpect(jsonPath("$.escalated", is(false)));
+
+        // 2. Reportes similares con colonia personalizada escrita distinto ("Col. Flores Magón" vs "flores magon") sí coinciden y escalan
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.11.1"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "otro",
+                                "customType", "Semáforo apagado",
+                                "zoneKey", "Col. Flores Magón",
+                                "zoneLabel", "Col. Flores Magón",
+                                "description", "No sirve el semáforo en la entrada"
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(1)));
+
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.11.2"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "otro",
+                                "customType", "Falla en semáforo",
+                                "zoneKey", "flores magon",
+                                "zoneLabel", "Flores Magón",
+                                "description", "Semáforo descompuesto en el crucero"
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(2)))
+                .andExpect(jsonPath("$.escalated", is(false)));
+
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.11.3"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "trafico_pesado",
+                                "zoneKey", "Colonia Flores Magón",
+                                "zoneLabel", "Colonia Flores Magón",
+                                "description", "Mucho tráfico por el semáforo"
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(3)))
+                .andExpect(jsonPath("$.escalated", is(true)))
+                .andExpect(jsonPath("$.noticeId", notNullValue()));
+
+        // 3. En la misma avenida grande ("reforma_test"), dos puntos distintos no se mezclan y el endpoint /confirm suma solo al elegido
+        MvcResult plazaRes = mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.12.1"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "bloqueo",
+                                "zoneKey", "reforma_test",
+                                "zoneLabel", "Av. Reforma",
+                                "description", "Carrera frente a Gran Plaza",
+                                "latitude", 23.2401,
+                                "longitude", -106.4367
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(1)))
+                .andReturn();
+
+        String plazaKey = objectMapper.readTree(plazaRes.getResponse().getContentAsString())
+                .get("incidentKey").asText();
+
+        mockMvc.perform(post("/api/pulse/incidents")
+                        .with(req -> { req.setRemoteAddr("10.0.12.2"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "type", "bloqueo",
+                                "zoneKey", "reforma_test",
+                                "zoneLabel", "Av. Reforma",
+                                "description", "Obras en Plaza de Toros",
+                                "latitude", 23.2401,
+                                "longitude", -106.4367
+                        ))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.distinctReporters", is(1)));
+
+        mockMvc.perform(post("/api/pulse/incidents/" + plazaKey + "/confirm")
+                        .with(req -> { req.setRemoteAddr("10.0.12.3"); return req; }))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.distinctReporters", is(2)))
+                .andExpect(jsonPath("$.escalated", is(false)));
+    }
 }

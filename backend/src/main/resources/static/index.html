@@ -372,9 +372,15 @@
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
                             <select id="pulse-inc-type" class="form-control" style="font-size:0.76rem; padding:6px 8px;">
                                 <option value="bloqueo">Bloqueo / Calle cerrada</option>
+                                <option value="accidente">Accidente / Choque</option>
+                                <option value="obras">Obras / Bacheo</option>
                                 <option value="inundacion">Calle inundada</option>
                                 <option value="desvio">Desvío de ruta</option>
+                                <option value="trafico_pesado">Tráfico muy lento</option>
+                                <option value="marcha_evento">Marcha / Evento</option>
                                 <option value="sin_servicio">Ya no están pasando</option>
+                                <option value="unidad_averiada">Camión descompuesto</option>
+                                <option value="otro">Otro incidente...</option>
                             </select>
                             <select id="pulse-inc-zone" class="form-control" style="font-size:0.76rem; padding:6px 8px;">
                                 <option value="malecon">Malecón (Av. Del Mar)</option>
@@ -383,14 +389,25 @@
                                 <option value="insurgentes">Av. Insurgentes</option>
                                 <option value="sabalo">Zona Dorada / Sábalo</option>
                                 <option value="leyva">Av. Gabriel Leyva</option>
-                                <option value="centro">Centro / Mercado</option>
+                                <option value="centro">Centro / Mercado Pino Suárez</option>
                                 <option value="colosio">Blvd. Colosio</option>
-                                <option value="custom">Otra zona...</option>
+                                <option value="mex15">Carretera Internacional / MEX 15</option>
+                                <option value="marina">Av. de la Marina</option>
+                                <option value="cerritos">Cerritos / Av. Sábalo Cerritos</option>
+                                <option value="reforma">Av. Reforma / Gran Plaza</option>
+                                <option value="gutierrez_najera">Av. Gutiérrez Nájera</option>
+                                <option value="munich">Av. Múnich / Juan Pablo II</option>
+                                <option value="juarez">Col. Benito Juárez</option>
+                                <option value="pradera_dorada">Pradera Dorada / Villa Verde</option>
+                                <option value="urias">Urías / Sur</option>
+                                <option value="escobosa">Av. Óscar Pérez Escobosa</option>
+                                <option value="custom">Otra avenida, calle o colonia...</option>
                             </select>
                         </div>
-                        <input type="text" id="pulse-inc-custom-zone" class="form-control" placeholder="Escribe calle o colonia..." style="display:none; font-size:0.76rem; padding:6px 8px;" maxlength="120">
-                        <input type="text" id="pulse-inc-desc" class="form-control" placeholder="Detalle breve (ej. cerrada frente al Acuario)" maxlength="260" style="font-size:0.76rem; padding:6px 8px;">
-                        <button type="submit" class="btn btn-primary" style="padding:7px 10px; font-size:0.78rem;">Enviar reporte en vivo (3 = Alerta)</button>
+                        <input type="text" id="pulse-inc-custom-type" class="form-control" placeholder="¿Qué está pasando? (ej. fuga de agua, semáforo apagado)" style="display:none; font-size:0.76rem; padding:6px 8px;" maxlength="80">
+                        <input type="text" id="pulse-inc-custom-zone" class="form-control" placeholder="Escribe avenida, calle o colonia (ej. Av. Reforma, Col. Juárez)" style="display:none; font-size:0.76rem; padding:6px 8px;" maxlength="120">
+                        <input type="text" id="pulse-inc-desc" class="form-control" placeholder="Detalle breve para coincidir (ej. choque frente al Acuario)" maxlength="260" style="font-size:0.76rem; padding:6px 8px;">
+                        <button type="submit" class="btn btn-primary" style="padding:7px 10px; font-size:0.78rem;">Enviar reporte en vivo (3 similares = Alerta)</button>
                     </form>
                     <div id="pulse-incidents-list" style="display:flex; flex-direction:column; gap:6px; margin-top:6px;"></div>
                 </div>

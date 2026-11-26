@@ -256,6 +256,16 @@ const Api = {
         return data;
     },
 
+    confirmPulseIncident: async (incidentKey) => {
+        const response = await fetch(`${API_BASE_URL}/pulse/incidents/${encodeURIComponent(incidentKey)}/confirm`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'No se pudo confirmar el reporte');
+        return data;
+    },
+
     clearZoneIncident: async (zoneKey) => {
         const response = await fetch(`${API_BASE_URL}/pulse/incidents/${encodeURIComponent(zoneKey)}/clear`, {
             method: 'POST',

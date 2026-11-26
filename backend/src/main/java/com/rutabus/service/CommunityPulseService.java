@@ -14,6 +14,7 @@ import java.sql.Statement;
 import java.text.Normalizer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class CommunityPulseService {
@@ -29,12 +30,41 @@ public class CommunityPulseService {
     private static final int MAX_INCIDENT_ZONES = 250;
 
     private static final Set<String> VALID_INCIDENT_TYPES = Set.of(
-            "bloqueo", "inundacion", "desvio", "sin_servicio"
+            "bloqueo", "accidente", "obras", "inundacion", "desvio",
+            "trafico_pesado", "marcha_evento", "sin_servicio", "unidad_averiada", "otro"
     );
+    private static final Set<String> ROAD_DISRUPTION_TYPES = Set.of(
+            "bloqueo", "accidente", "obras", "desvio", "trafico_pesado", "marcha_evento", "sin_servicio"
+    );
+    private static final Set<String> WATER_COMPATIBLE_TYPES = Set.of("inundacion", "bloqueo", "desvio", "obras");
+    private static final Set<String> BUS_COMPATIBLE_TYPES = Set.of("unidad_averiada", "sin_servicio", "trafico_pesado");
+    private static final Set<String> DANGER_TYPES = Set.of("bloqueo", "accidente", "inundacion", "sin_servicio");
     private static final Set<String> VALID_SEVERITIES = Set.of("info", "warning", "danger");
+
+    private static final Map<String, String> ZONE_ALIASES = buildZoneAliases();
+    private static final Map<String, String> CONCEPT_SYNONYMS = buildConceptSynonyms();
+    private static final Set<String> ZONE_PREFIX_WORDS = Set.of(
+            "av", "ave", "avenida", "blvd", "bulevar", "boulevard", "calle", "c",
+            "col", "colonia", "fracc", "fraccionamiento", "ctra", "carretera",
+            "de", "del", "la", "las", "el", "los", "y", "en"
+    );
+    private static final Set<String> STOPWORDS = Set.of(
+            "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "al",
+            "en", "por", "para", "con", "sin", "sobre", "entre", "hacia", "y", "o", "u",
+            "que", "se", "su", "es", "son", "esta", "estan", "hay", "muy", "mucho", "mucha",
+            "casi", "todo", "toda", "todos", "otra", "otro", "frente", "cerca", "junto",
+            "esquina", "cruce", "crucero", "altura", "zona", "tramo", "parte", "lado", "sentido",
+            "entrada", "salida", "plaza", "glorieta",
+            "calle", "avenida", "av", "blvd", "col", "colonia", "fracc", "ruta", "rutas",
+            "camion", "camiones", "unidad", "unidades", "reportado", "reporte", "pasa",
+            "paso", "pasan", "pasando", "cerrado", "cerrada", "bloqueo", "incidente",
+            "problema", "falla", "grande", "fuerte"
+    );
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    private final AtomicLong incidentSeq = new AtomicLong(1);
 
     private static class SightingEntry {
         final String reporterKey;
@@ -58,10 +88,15 @@ public class CommunityPulseService {
     }
 
     private static class IncidentBucket {
+        final String bucketKey;
         final String zoneKey;
+        final Set<String> zoneTokens = new LinkedHashSet<>();
         String zoneLabel;
         String type;
+        String typeLabel;
         String latestNote;
+        boolean hasExplicitDetail;
+        final Set<String> similarityTokens = new LinkedHashSet<>();
         Double latitude;
         Double longitude;
         final Map<String, Long> reporters = new LinkedHashMap<>();
@@ -70,10 +105,14 @@ public class CommunityPulseService {
         boolean escalated;
         long updatedAtMs;
 
-        IncidentBucket(String zoneKey, String zoneLabel, String type) {
+        IncidentBucket(String bucketKey, String zoneKey, Set<String> zoneTokens, String zoneLabel,
+                       String type, String typeLabel) {
+            this.bucketKey = bucketKey;
             this.zoneKey = zoneKey;
+            if (zoneTokens != null) this.zoneTokens.addAll(zoneTokens);
             this.zoneLabel = zoneLabel;
             this.type = type;
+            this.typeLabel = typeLabel;
         }
 
         synchronized void prune(long nowMs) {
@@ -178,6 +217,7 @@ public class CommunityPulseService {
 
     public Map<String, Object> reportIncident(
             String rawType,
+            String rawCustomType,
             String rawZoneKey,
             String rawZoneLabel,
             String rawDescription,
@@ -187,17 +227,41 @@ public class CommunityPulseService {
 
         String type = rawType != null ? rawType.trim().toLowerCase(Locale.ROOT) : "bloqueo";
         if (!VALID_INCIDENT_TYPES.contains(type)) {
-            throw new IllegalArgumentException("Tipo de incidente inválido. Usa: bloqueo, inundacion, desvio o sin_servicio.");
+            throw new IllegalArgumentException("Tipo de incidente inválido.");
         }
+        String customType = sanitizeText(rawCustomType, 80, "");
+        if ("otro".equals(type) && customType.isBlank() && sanitizeText(rawDescription, 300, "").isBlank()) {
+            throw new IllegalArgumentException("Especifica qué incidente está pasando en la calle.");
+        }
+        String typeLabel = "otro".equals(type)
+                ? (!customType.isBlank() ? customType : "Otro incidente")
+                : defaultTypeLabel(type);
+
         String zoneLabel = sanitizeText(rawZoneLabel, 140, "");
-        String zoneKey = normalizeZoneKey(rawZoneKey != null && !rawZoneKey.isBlank() ? rawZoneKey : zoneLabel);
+        String rawZoneInput = (rawZoneKey != null && !rawZoneKey.isBlank()) ? rawZoneKey : zoneLabel;
+        String zoneKey = canonicalZoneKey(rawZoneInput);
         if (zoneKey.isBlank()) {
-            throw new IllegalArgumentException("Indica una zona o corredor para el reporte.");
+            throw new IllegalArgumentException("Indica una avenida, calle o colonia para el reporte.");
         }
         if (zoneLabel.isBlank()) {
             zoneLabel = humanizeZoneKey(zoneKey);
         }
-        String description = sanitizeText(rawDescription, 300, defaultDescriptionForType(type, zoneLabel));
+        Set<String> zoneTokens = extractZoneTokens(zoneLabel + " " + rawZoneInput);
+
+        String explicitDescription = sanitizeText(rawDescription, 300, "");
+        boolean hasExplicitDetail = !explicitDescription.isBlank() || ("otro".equals(type) && !customType.isBlank());
+        String description = !explicitDescription.isBlank()
+                ? explicitDescription
+                : ("otro".equals(type) && !customType.isBlank()
+                        ? customType + " en " + zoneLabel
+                        : defaultDescriptionForType(type, zoneLabel));
+
+        String combinedSimilarityText = ("otro".equals(type) ? customType + " " : "") + explicitDescription;
+        Set<String> incomingTokens = extractContentTokens(combinedSimilarityText);
+        if (incomingTokens.isEmpty() && "otro".equals(type)) {
+            incomingTokens = extractFallbackTokens(customType + " " + explicitDescription);
+        }
+
         String reporter = sanitizeText(reporterKey, 80, "anon");
         long now = System.currentTimeMillis();
 
@@ -217,43 +281,93 @@ public class CommunityPulseService {
             });
         }
 
-        String bucketKey = type + "::" + zoneKey;
-        final String initialZoneLabel = zoneLabel;
-        IncidentBucket bucket = activeIncidents.computeIfAbsent(
-                bucketKey, k -> new IncidentBucket(zoneKey, initialZoneLabel, type)
+        IncidentBucket bucket = findBestMatchingBucket(
+                type, zoneKey, zoneTokens, incomingTokens, hasExplicitDetail, safeLat, safeLng, now
         );
+        if (bucket == null) {
+            String newBucketKey = type + "__" + zoneKey + "__" + incidentSeq.getAndIncrement();
+            IncidentBucket fresh = new IncidentBucket(newBucketKey, zoneKey, zoneTokens, zoneLabel, type, typeLabel);
+            IncidentBucket race = activeIncidents.putIfAbsent(newBucketKey, fresh);
+            bucket = race != null ? race : fresh;
+        }
+
+        return recordVoteIntoBucket(bucket, reporter, type, typeLabel, description,
+                hasExplicitDetail, incomingTokens, safeLat, safeLng, now);
+    }
+
+    public Map<String, Object> confirmExistingIncident(String rawIncidentKey, String reporterKey) {
+        String key = rawIncidentKey != null ? rawIncidentKey.trim() : "";
+        if (key.isBlank()) {
+            throw new IllegalArgumentException("Incidente inválido.");
+        }
+        IncidentBucket bucket = activeIncidents.get(key);
+        if (bucket == null) {
+            throw new IllegalArgumentException("Ese reporte ya expiró o fue liberado.");
+        }
+        String reporter = sanitizeText(reporterKey, 80, "anon");
+        long now = System.currentTimeMillis();
+        return recordVoteIntoBucket(bucket, reporter, bucket.type, bucket.typeLabel, null,
+                false, Set.of(), null, null, now);
+    }
+
+    private Map<String, Object> recordVoteIntoBucket(
+            IncidentBucket bucket,
+            String reporter,
+            String incomingType,
+            String incomingTypeLabel,
+            String description,
+            boolean hasExplicitDetail,
+            Set<String> incomingTokens,
+            Double safeLat,
+            Double safeLng,
+            long now) {
 
         boolean escalatedNow = false;
         int distinctReporters;
         Long linkedNoticeId;
+        String resolvedZoneKey;
+        String resolvedZoneLabel;
+        String resolvedType;
+        String resolvedTypeLabel;
 
         synchronized (bucket) {
             bucket.prune(now);
-            bucket.zoneLabel = zoneLabel;
-            bucket.latestNote = description;
+            if (description != null && !description.isBlank()) {
+                bucket.latestNote = description;
+            }
+            if (hasExplicitDetail) {
+                bucket.hasExplicitDetail = true;
+            }
+            if (incomingTokens != null && !incomingTokens.isEmpty()) {
+                bucket.similarityTokens.addAll(incomingTokens);
+            }
+            // Si una votación previa genérica se enriquece con un tipo concreto compatible, conservar el más claro
+            if ("otro".equals(bucket.type) && !"otro".equals(incomingType)) {
+                bucket.type = incomingType;
+                bucket.typeLabel = incomingTypeLabel;
+            }
             bucket.updatedAtMs = now;
             if (safeLat != null && safeLng != null) {
                 bucket.latitude = safeLat;
                 bucket.longitude = safeLng;
             }
             bucket.reporters.put(reporter, now);
-            // Un nuevo reporte activo invalida confirmaciones previas de despeje del mismo reportante
             bucket.clearConfirmers.remove(reporter);
 
             distinctReporters = bucket.reporters.size();
 
             if (distinctReporters >= INCIDENT_ESCALATE_THRESHOLD) {
                 if (bucket.noticeId == null) {
-                    bucket.noticeId = findActiveAutoNoticeId(zoneKey);
+                    bucket.noticeId = findMatchingAutoNoticeId(bucket.zoneKey, bucket.type, bucket.typeLabel);
                 }
-                String title = buildAutoNoticeTitle(type, zoneLabel);
-                String body = buildAutoNoticeBody(distinctReporters, description);
-                String severity = ("bloqueo".equals(type) || "inundacion".equals(type)) ? "danger" : "warning";
+                String title = buildAutoNoticeTitle(bucket.type, bucket.typeLabel, bucket.zoneLabel);
+                String body = buildAutoNoticeBody(distinctReporters, bucket.latestNote);
+                String severity = DANGER_TYPES.contains(bucket.type) ? "danger" : "warning";
                 boolean pinBanner = true;
 
                 if (bucket.noticeId == null) {
                     bucket.noticeId = insertNotice(
-                            zoneKey, zoneLabel, null, title, body, severity,
+                            bucket.zoneKey, bucket.zoneLabel, null, title, body, severity,
                             "auto_comunidad", distinctReporters, bucket.clearConfirmers.size(),
                             pinBanner, bucket.latitude, bucket.longitude,
                             "comunidad", now, now + DEFAULT_AUTO_NOTICE_TTL_MS
@@ -274,26 +388,33 @@ public class CommunityPulseService {
                 bucket.escalated = true;
             }
             linkedNoticeId = bucket.noticeId;
+            resolvedZoneKey = bucket.zoneKey;
+            resolvedZoneLabel = bucket.zoneLabel;
+            resolvedType = bucket.type;
+            resolvedTypeLabel = bucket.typeLabel;
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("zoneKey", zoneKey);
-        response.put("zoneLabel", zoneLabel);
-        response.put("type", type);
+        response.put("incidentKey", bucket.bucketKey);
+        response.put("zoneKey", resolvedZoneKey);
+        response.put("zoneLabel", resolvedZoneLabel);
+        response.put("type", resolvedType);
+        response.put("typeLabel", resolvedTypeLabel);
         response.put("distinctReporters", distinctReporters);
         response.put("threshold", INCIDENT_ESCALATE_THRESHOLD);
         response.put("escalated", distinctReporters >= INCIDENT_ESCALATE_THRESHOLD);
         response.put("escalatedNow", escalatedNow);
         response.put("noticeId", linkedNoticeId);
         response.put("message", distinctReporters >= INCIDENT_ESCALATE_THRESHOLD
-                ? "¡Confirmado! Con " + distinctReporters + " reportes en " + zoneLabel + ", la alerta ya aparece en Notificaciones de Don Rutero."
-                : "Reporte registrado (" + distinctReporters + "/" + INCIDENT_ESCALATE_THRESHOLD + " para publicar alerta automática en " + zoneLabel + ").");
+                ? "¡Confirmado! Con " + distinctReporters + " reportes coincidentes en " + resolvedZoneLabel + ", la alerta ya aparece en Notificaciones de Don Rutero."
+                : "Reporte registrado (" + distinctReporters + "/" + INCIDENT_ESCALATE_THRESHOLD + " reportes similares para publicar alerta en " + resolvedZoneLabel + ").");
         return response;
     }
 
-    public Map<String, Object> confirmZoneClear(String rawZoneKey, String reporterKey, boolean isAdmin) {
-        String zoneKey = normalizeZoneKey(rawZoneKey);
-        if (zoneKey.isBlank()) {
+    public Map<String, Object> confirmZoneClear(String rawZoneOrIncidentKey, String reporterKey, boolean isAdmin) {
+        String rawTrimmed = rawZoneOrIncidentKey != null ? rawZoneOrIncidentKey.trim() : "";
+        String zoneKey = canonicalZoneKey(rawTrimmed);
+        if (rawTrimmed.isBlank() && zoneKey.isBlank()) {
             throw new IllegalArgumentException("Zona inválida.");
         }
         String reporter = sanitizeText(reporterKey, 80, "anon");
@@ -302,26 +423,51 @@ public class CommunityPulseService {
         int maxClearCount = 0;
         boolean cleared = isAdmin;
         List<String> keysToRemove = new ArrayList<>();
+        Set<Long> clearedNoticeIds = new LinkedHashSet<>();
 
-        for (Map.Entry<String, IncidentBucket> entry : activeIncidents.entrySet()) {
-            IncidentBucket bucket = entry.getValue();
-            if (!bucket.zoneKey.equals(zoneKey)) continue;
-            synchronized (bucket) {
-                bucket.prune(now);
-                bucket.clearConfirmers.put(reporter, now);
-                maxClearCount = Math.max(maxClearCount, bucket.clearConfirmers.size());
-                if (isAdmin || bucket.clearConfirmers.size() >= COMMUNITY_CLEAR_THRESHOLD) {
+        IncidentBucket exactBucket = activeIncidents.get(rawTrimmed);
+        if (exactBucket != null) {
+            synchronized (exactBucket) {
+                exactBucket.prune(now);
+                exactBucket.clearConfirmers.put(reporter, now);
+                maxClearCount = Math.max(maxClearCount, exactBucket.clearConfirmers.size());
+                if (isAdmin || exactBucket.clearConfirmers.size() >= COMMUNITY_CLEAR_THRESHOLD) {
                     cleared = true;
-                    keysToRemove.add(entry.getKey());
+                    keysToRemove.add(rawTrimmed);
+                    if (exactBucket.noticeId != null) {
+                        clearedNoticeIds.add(exactBucket.noticeId);
+                    }
+                } else if (exactBucket.noticeId != null) {
+                    jdbcTemplate.update(
+                            "UPDATE service_notices SET clear_count = ?, updated_at_ms = ? WHERE id = ?",
+                            maxClearCount, now, exactBucket.noticeId
+                    );
                 }
             }
-        }
+            zoneKey = exactBucket.zoneKey;
+        } else {
+            for (Map.Entry<String, IncidentBucket> entry : activeIncidents.entrySet()) {
+                IncidentBucket bucket = entry.getValue();
+                if (!bucket.zoneKey.equals(zoneKey)) continue;
+                synchronized (bucket) {
+                    bucket.prune(now);
+                    bucket.clearConfirmers.put(reporter, now);
+                    maxClearCount = Math.max(maxClearCount, bucket.clearConfirmers.size());
+                    if (isAdmin || bucket.clearConfirmers.size() >= COMMUNITY_CLEAR_THRESHOLD) {
+                        cleared = true;
+                        keysToRemove.add(entry.getKey());
+                        if (bucket.noticeId != null) {
+                            clearedNoticeIds.add(bucket.noticeId);
+                        }
+                    }
+                }
+            }
 
-        if (!cleared && maxClearCount == 0) {
-            // Caso en que el aviso siguió vivo en BD después de reinicio
-            Long activeNoticeId = findActiveAutoNoticeId(zoneKey);
-            if (activeNoticeId != null) {
-                return confirmNoticeClear(activeNoticeId, reporter, false);
+            if (!cleared && maxClearCount == 0) {
+                Long activeNoticeId = findActiveAutoNoticeId(zoneKey);
+                if (activeNoticeId != null) {
+                    return confirmNoticeClear(activeNoticeId, reporter, false);
+                }
             }
         }
 
@@ -329,13 +475,23 @@ public class CommunityPulseService {
             for (String k : keysToRemove) {
                 activeIncidents.remove(k);
             }
-            int updated = jdbcTemplate.update("""
-                UPDATE service_notices
-                SET active = FALSE, clear_count = GREATEST(clear_count, ?), updated_at_ms = ?
-                WHERE zone_key = ? AND origin = 'auto_comunidad' AND active = TRUE
-                """, Math.max(maxClearCount, isAdmin ? COMMUNITY_CLEAR_THRESHOLD : 1), now, zoneKey);
+            int updated = 0;
+            if (!clearedNoticeIds.isEmpty()) {
+                for (Long nid : clearedNoticeIds) {
+                    updated += jdbcTemplate.update(
+                            "UPDATE service_notices SET active = FALSE, clear_count = GREATEST(clear_count, ?), updated_at_ms = ? WHERE id = ?",
+                            Math.max(maxClearCount, isAdmin ? COMMUNITY_CLEAR_THRESHOLD : 1), now, nid
+                    );
+                }
+            } else if (!zoneKey.isBlank()) {
+                updated = jdbcTemplate.update("""
+                    UPDATE service_notices
+                    SET active = FALSE, clear_count = GREATEST(clear_count, ?), updated_at_ms = ?
+                    WHERE zone_key = ? AND origin = 'auto_comunidad' AND active = TRUE
+                    """, Math.max(maxClearCount, isAdmin ? COMMUNITY_CLEAR_THRESHOLD : 1), now, zoneKey);
+            }
             log.info("Zona '{}' marcada como despejada (cleared={}, noticesUpdated={}).", zoneKey, true, updated);
-        } else {
+        } else if (exactBucket == null && !zoneKey.isBlank()) {
             jdbcTemplate.update("""
                 UPDATE service_notices
                 SET clear_count = ?, updated_at_ms = ?
@@ -547,9 +703,11 @@ public class CommunityPulseService {
                     continue;
                 }
                 Map<String, Object> dto = new LinkedHashMap<>();
+                dto.put("incidentKey", bucket.bucketKey);
                 dto.put("zoneKey", bucket.zoneKey);
                 dto.put("zoneLabel", bucket.zoneLabel);
                 dto.put("type", bucket.type);
+                dto.put("typeLabel", bucket.typeLabel);
                 dto.put("description", bucket.latestNote);
                 dto.put("distinctReporters", bucket.reporters.size());
                 dto.put("threshold", INCIDENT_ESCALATE_THRESHOLD);
@@ -609,6 +767,187 @@ public class CommunityPulseService {
                 Long.class, zoneKey
         );
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private Long findMatchingAutoNoticeId(String zoneKey, String type, String typeLabel) {
+        List<Map<String, Object>> candidates = jdbcTemplate.queryForList(
+                "SELECT id, title FROM service_notices WHERE zone_key = ? AND origin = 'auto_comunidad' AND active = TRUE ORDER BY id DESC LIMIT 10",
+                zoneKey
+        );
+        if (candidates.isEmpty()) return null;
+        Set<String> targetTokens = extractContentTokens((typeLabel != null ? typeLabel : "") + " " + defaultTypeLabel(type));
+        for (Map<String, Object> row : candidates) {
+            String title = Objects.toString(row.get("title"), "");
+            Set<String> titleTokens = extractContentTokens(title);
+            if (!targetTokens.isEmpty() && countMatchingTokens(targetTokens, titleTokens) > 0) {
+                return ((Number) row.get("id")).longValue();
+            }
+        }
+        return null;
+    }
+
+    private IncidentBucket findBestMatchingBucket(
+            String type,
+            String zoneKey,
+            Set<String> zoneTokens,
+            Set<String> incomingTokens,
+            boolean incomingHasExplicitDetail,
+            Double lat,
+            Double lng,
+            long now) {
+
+        IncidentBucket best = null;
+        int bestScore = 0;
+
+        for (IncidentBucket bucket : activeIncidents.values()) {
+            synchronized (bucket) {
+                bucket.prune(now);
+                if (bucket.reporters.isEmpty()) continue;
+
+                if (!zonesAreSimilar(bucket.zoneKey, bucket.zoneTokens, zoneKey, zoneTokens)) {
+                    continue;
+                }
+
+                int score = scoreIncidentSimilarity(
+                        bucket, type, incomingTokens, incomingHasExplicitDetail, lat, lng
+                );
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = bucket;
+                }
+            }
+        }
+        return best;
+    }
+
+    private int scoreIncidentSimilarity(
+            IncidentBucket bucket,
+            String type,
+            Set<String> incomingTokens,
+            boolean incomingHasExplicitDetail,
+            Double lat,
+            Double lng) {
+
+        boolean sameType = bucket.type.equals(type);
+        boolean involvesCustomType = "otro".equals(bucket.type) || "otro".equals(type);
+        if (!sameType && !involvesCustomType && !areTypesCompatible(bucket.type, type)) {
+            return 0;
+        }
+
+        Double distMeters = (lat != null && lng != null && bucket.latitude != null && bucket.longitude != null)
+                ? haversineMeters(lat, lng, bucket.latitude, bucket.longitude)
+                : null;
+
+        boolean bothHaveTokens = !bucket.similarityTokens.isEmpty() && !incomingTokens.isEmpty();
+        int shared = bothHaveTokens ? countMatchingTokens(bucket.similarityTokens, incomingTokens) : 0;
+
+        if (involvesCustomType || !sameType) {
+            if (!bothHaveTokens || shared == 0) {
+                return 0;
+            }
+            if (!hasStrongTokenOverlap(shared, bucket.similarityTokens.size(), incomingTokens.size())) {
+                return 0;
+            }
+            if (distMeters != null && distMeters > 1800 && shared < 2) {
+                return 0;
+            }
+            return (sameType ? 40 : 25) + shared * 15;
+        }
+
+        // Mismo tipo predefinido en la misma zona
+        if (bothHaveTokens) {
+            if (shared == 0 || !hasStrongTokenOverlap(shared, bucket.similarityTokens.size(), incomingTokens.size())) {
+                return 0;
+            }
+            return 50 + shared * 15;
+        }
+
+        // Al menos uno fue reporte rápido sin descripción específica
+        if (bucket.hasExplicitDetail && incomingHasExplicitDetail) {
+            return 0;
+        }
+        if (distMeters != null && distMeters > 1200) {
+            return 0;
+        }
+        return 30;
+    }
+
+    private boolean hasStrongTokenOverlap(int shared, int sizeA, int sizeB) {
+        int minSize = Math.min(sizeA, sizeB);
+        return shared >= 2 || (minSize > 0 && (double) shared / minSize >= 0.33);
+    }
+
+    private boolean areTypesCompatible(String t1, String t2) {
+        if (t1.equals(t2)) return true;
+        if (ROAD_DISRUPTION_TYPES.contains(t1) && ROAD_DISRUPTION_TYPES.contains(t2)) return true;
+        if (WATER_COMPATIBLE_TYPES.contains(t1) && WATER_COMPATIBLE_TYPES.contains(t2)) return true;
+        return BUS_COMPATIBLE_TYPES.contains(t1) && BUS_COMPATIBLE_TYPES.contains(t2);
+    }
+
+    private boolean zonesAreSimilar(String keyA, Set<String> tokensA, String keyB, Set<String> tokensB) {
+        if (keyA.equals(keyB)) return true;
+        if (tokensA.isEmpty() || tokensB.isEmpty()) return false;
+        int shared = countMatchingTokens(tokensA, tokensB);
+        if (shared == 0) return false;
+        int minSize = Math.min(tokensA.size(), tokensB.size());
+        int maxSize = Math.max(tokensA.size(), tokensB.size());
+        return (double) shared / minSize >= 0.65 && (double) shared / maxSize >= 0.5;
+    }
+
+    private int countMatchingTokens(Set<String> a, Set<String> b) {
+        int matches = 0;
+        for (String tokenA : a) {
+            if (b.contains(tokenA)) {
+                matches++;
+                continue;
+            }
+            if (tokenA.length() >= 5) {
+                for (String tokenB : b) {
+                    if (tokenB.length() >= 5 && levenshteinAtMostOne(tokenA, tokenB)) {
+                        matches++;
+                        break;
+                    }
+                }
+            }
+        }
+        return matches;
+    }
+
+    private boolean levenshteinAtMostOne(String s1, String s2) {
+        int lenDiff = Math.abs(s1.length() - s2.length());
+        if (lenDiff > 1) return false;
+        if (s1.length() == s2.length()) {
+            int diffs = 0;
+            for (int i = 0; i < s1.length(); i++) {
+                if (s1.charAt(i) != s2.charAt(i) && ++diffs > 1) return false;
+            }
+            return true;
+        }
+        String shorter = s1.length() < s2.length() ? s1 : s2;
+        String longer = s1.length() < s2.length() ? s2 : s1;
+        int i = 0, j = 0;
+        boolean skipped = false;
+        while (i < shorter.length() && j < longer.length()) {
+            if (shorter.charAt(i) == longer.charAt(j)) {
+                i++;
+                j++;
+            } else {
+                if (skipped) return false;
+                skipped = true;
+                j++;
+            }
+        }
+        return true;
+    }
+
+    private double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+        double r = 6371000.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     private Long insertNotice(
@@ -677,13 +1016,86 @@ public class CommunityPulseService {
         return clean.length() > maxLen ? clean.substring(0, maxLen) : clean;
     }
 
-    private String normalizeZoneKey(String raw) {
+    private String normalizeAsciiLower(String raw) {
         if (raw == null) return "";
-        String norm = Normalizer.normalize(raw.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFD)
-                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")
+        return Normalizer.normalize(raw.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFD)
+                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "");
+    }
+
+    private String normalizeTokenWord(String token) {
+        return switch (token) {
+            case "i" -> "1";
+            case "ii" -> "2";
+            case "iii" -> "3";
+            case "iv" -> "4";
+            default -> token;
+        };
+    }
+
+    private String normalizeZoneKey(String raw) {
+        String norm = normalizeAsciiLower(raw)
                 .replaceAll("[^a-z0-9]+", "_")
                 .replaceAll("^_+|_+$", "");
         return norm.length() > 64 ? norm.substring(0, 64) : norm;
+    }
+
+    private String canonicalZoneKey(String raw) {
+        String base = normalizeZoneKey(raw);
+        if (base.isBlank()) return "";
+        String directAlias = ZONE_ALIASES.get(base);
+        if (directAlias != null) return directAlias;
+
+        List<String> stripped = new ArrayList<>();
+        for (String part : base.split("_")) {
+            if (part.isBlank()) continue;
+            String normalized = normalizeTokenWord(part);
+            if (!ZONE_PREFIX_WORDS.contains(normalized)) {
+                stripped.add(normalized);
+            }
+        }
+        String compact = String.join("_", stripped);
+        if (!compact.isBlank()) {
+            String alias = ZONE_ALIASES.get(compact);
+            if (alias != null) return alias;
+            return compact.length() > 64 ? compact.substring(0, 64) : compact;
+        }
+        return base;
+    }
+
+    private Set<String> extractZoneTokens(String raw) {
+        Set<String> tokens = new LinkedHashSet<>();
+        String clean = normalizeAsciiLower(raw).replaceAll("[^a-z0-9]+", " ");
+        for (String part : clean.split("\\s+")) {
+            if (part.isBlank()) continue;
+            String normalized = normalizeTokenWord(part);
+            if (!ZONE_PREFIX_WORDS.contains(normalized)) {
+                tokens.add(normalized);
+            }
+        }
+        return tokens;
+    }
+
+    private Set<String> extractContentTokens(String raw) {
+        Set<String> tokens = new LinkedHashSet<>();
+        String clean = normalizeAsciiLower(raw).replaceAll("[^a-z0-9]+", " ");
+        for (String part : clean.split("\\s+")) {
+            if (part.length() < 2) continue;
+            String mapped = CONCEPT_SYNONYMS.getOrDefault(part, normalizeTokenWord(part));
+            if (STOPWORDS.contains(mapped) || STOPWORDS.contains(part)) continue;
+            tokens.add(mapped);
+        }
+        return tokens;
+    }
+
+    private Set<String> extractFallbackTokens(String raw) {
+        Set<String> tokens = new LinkedHashSet<>();
+        String clean = normalizeAsciiLower(raw).replaceAll("[^a-z0-9]+", " ");
+        for (String part : clean.split("\\s+")) {
+            if (part.length() >= 3) {
+                tokens.add(CONCEPT_SYNONYMS.getOrDefault(part, normalizeTokenWord(part)));
+            }
+        }
+        return tokens;
     }
 
     private String humanizeZoneKey(String zoneKey) {
@@ -694,20 +1106,46 @@ public class CommunityPulseService {
                 .orElse("Mazatlán");
     }
 
+    private String defaultTypeLabel(String type) {
+        return switch (type) {
+            case "accidente" -> "Accidente / Choque";
+            case "obras" -> "Obras / Bacheo";
+            case "inundacion" -> "Calle inundada";
+            case "desvio" -> "Desvío de ruta";
+            case "trafico_pesado" -> "Tráfico muy lento";
+            case "marcha_evento" -> "Marcha / Evento";
+            case "sin_servicio" -> "Ya no están pasando";
+            case "unidad_averiada" -> "Camión descompuesto";
+            case "otro" -> "Otro incidente";
+            default -> "Bloqueo / Calle cerrada";
+        };
+    }
+
     private String defaultDescriptionForType(String type, String zoneLabel) {
         return switch (type) {
+            case "accidente" -> "Accidente o choque vial reportado en " + zoneLabel;
+            case "obras" -> "Obras o reparación vial reportada en " + zoneLabel;
             case "inundacion" -> "Encharcamiento o inundación reportada en " + zoneLabel;
             case "desvio" -> "Desvío temporal de camiones en " + zoneLabel;
+            case "trafico_pesado" -> "Tráfico muy lento reportado en " + zoneLabel;
+            case "marcha_evento" -> "Marcha o evento con cierre vial en " + zoneLabel;
             case "sin_servicio" -> "Sin paso de unidades reportado en " + zoneLabel;
+            case "unidad_averiada" -> "Camión descompuesto o varado en " + zoneLabel;
             default -> "Bloqueo o cierre vial reportado en " + zoneLabel;
         };
     }
 
-    private String buildAutoNoticeTitle(String type, String zoneLabel) {
+    private String buildAutoNoticeTitle(String type, String typeLabel, String zoneLabel) {
         return switch (type) {
+            case "accidente" -> "Accidente vial en " + zoneLabel;
+            case "obras" -> "Obras viales en " + zoneLabel;
             case "inundacion" -> "Calle inundada en " + zoneLabel;
             case "desvio" -> "Desvío de rutas en " + zoneLabel;
+            case "trafico_pesado" -> "Tráfico lento en " + zoneLabel;
+            case "marcha_evento" -> "Marcha o evento en " + zoneLabel;
             case "sin_servicio" -> "Paso detenido en " + zoneLabel;
+            case "unidad_averiada" -> "Camión descompuesto en " + zoneLabel;
+            case "otro" -> ((typeLabel != null && !typeLabel.isBlank()) ? typeLabel : "Incidente") + " en " + zoneLabel;
             default -> "Bloqueo reportado en " + zoneLabel;
         };
     }
@@ -715,5 +1153,96 @@ public class CommunityPulseService {
     private String buildAutoNoticeBody(int distinctReporters, String latestDescription) {
         return distinctReporters + " usuarios reportaron afectación reciente. " + latestDescription
                 + " Si ya liberaron la calle, toca «Ya está todo bien».";
+    }
+
+    private static Map<String, String> buildZoneAliases() {
+        Map<String, String> m = new HashMap<>();
+        m.put("malecon", "malecon");
+        m.put("del_mar", "malecon");
+        m.put("malecon_del_mar", "malecon");
+        m.put("buelna", "buelna");
+        m.put("rafael_buelna", "buelna");
+        m.put("ejercito", "ejercito");
+        m.put("ejercito_mexicano", "ejercito");
+        m.put("insurgentes", "insurgentes");
+        m.put("sabalo", "sabalo");
+        m.put("zona_dorada", "sabalo");
+        m.put("camaron_sabalo", "sabalo");
+        m.put("zona_dorada_sabalo", "sabalo");
+        m.put("leyva", "leyva");
+        m.put("gabriel_leyva", "leyva");
+        m.put("centro", "centro");
+        m.put("mercado", "centro");
+        m.put("mercado_pino_suarez", "centro");
+        m.put("centro_mercado", "centro");
+        m.put("centro_mercado_pino_suarez", "centro");
+        m.put("colosio", "colosio");
+        m.put("luis_donaldo_colosio", "colosio");
+        m.put("mex15", "mex15");
+        m.put("mex_15", "mex15");
+        m.put("internacional", "mex15");
+        m.put("mexico_15", "mex15");
+        m.put("internacional_mex_15", "mex15");
+        m.put("marina", "marina");
+        m.put("marina_mazatlan", "marina");
+        m.put("cerritos", "cerritos");
+        m.put("sabalo_cerritos", "cerritos");
+        m.put("cerritos_sabalo_cerritos", "cerritos");
+        m.put("reforma", "reforma");
+        m.put("reforma_gran_plaza", "reforma");
+        m.put("gutierrez_najera", "gutierrez_najera");
+        m.put("munich", "munich");
+        m.put("juan_pablo_2", "munich");
+        m.put("munich_juan_pablo_2", "munich");
+        m.put("juarez", "juarez");
+        m.put("benito_juarez", "juarez");
+        m.put("pradera_dorada", "pradera_dorada");
+        m.put("pradera", "pradera_dorada");
+        m.put("villa_verde", "pradera_dorada");
+        m.put("pradera_dorada_villa_verde", "pradera_dorada");
+        m.put("urias", "urias");
+        m.put("urias_sur", "urias");
+        m.put("escobosa", "escobosa");
+        m.put("oscar_perez_escobosa", "escobosa");
+        m.put("perez_escobosa", "escobosa");
+        return Collections.unmodifiableMap(m);
+    }
+
+    private static Map<String, String> buildConceptSynonyms() {
+        Map<String, String> m = new HashMap<>();
+        for (String w : List.of("choque", "choco", "chocar", "chocaron", "accidente", "colision", "atropello", "volcadura")) {
+            m.put(w, "choque");
+        }
+        for (String w : List.of("obra", "obras", "bache", "baches", "bacheo", "reparacion", "reparando", "zanja", "pavimentacion", "excavacion", "maquinaria")) {
+            m.put(w, "obras");
+        }
+        for (String w : List.of("inundado", "inundada", "inundacion", "encharcamiento", "encharcado", "encharcada", "inunda", "charco", "anegado")) {
+            m.put(w, "inundacion");
+        }
+        for (String w : List.of("semaforo", "semaforos")) {
+            m.put(w, "semaforo");
+        }
+        for (String w : List.of("desvio", "desvios", "desviando", "desviaron", "desviacion", "rodeando")) {
+            m.put(w, "desvio");
+        }
+        for (String w : List.of("descompuesto", "descompuso", "averiado", "averiada", "varado", "varada", "ponchado", "ponchada", "tirado", "apagado", "apagada", "apagaron", "sirve", "funciona", "danado", "danada", "roto", "rota")) {
+            m.put(w, "averiado");
+        }
+        for (String w : List.of("marcha", "manifestacion", "planton", "desfile", "carnaval", "carrera", "evento", "concierto", "procesion")) {
+            m.put(w, "evento");
+        }
+        for (String w : List.of("trafico", "congestion", "embotellamiento", "lento", "atorado", "parado", "fila", "colas")) {
+            m.put(w, "trafico");
+        }
+        for (String w : List.of("fuga", "fugas", "derrame", "alcantarilla", "drenaje")) {
+            m.put(w, "fuga");
+        }
+        for (String w : List.of("cable", "cables", "poste", "postes", "luz", "transformador")) {
+            m.put(w, "cable_poste");
+        }
+        for (String w : List.of("arbol", "arboles", "rama", "ramas", "palmera")) {
+            m.put(w, "arbol");
+        }
+        return Collections.unmodifiableMap(m);
     }
 }

@@ -24,6 +24,7 @@ import java.util.Map;
 
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -129,6 +130,8 @@ class GoogleAuthIntegrationTest {
 
         JsonNode firstJson = objectMapper.readTree(firstRes.getResponse().getContentAsString());
         String createdUsername = firstJson.get("username").asText();
+        User savedGoogleUser = userRepository.findByEmail("estudiante.mzt@gmail.com").orElseThrow();
+        assertNotNull(savedGoogleUser.getCreatedAt());
 
         // Segundo acceso con el mismo correo reutiliza exactamente la misma cuenta sin duplicar
         mockMvc.perform(post("/api/auth/google")
