@@ -25,7 +25,9 @@ import java.util.Map;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -165,6 +167,40 @@ class GoogleAuthIntegrationTest {
         mockMvc.perform(post("/api/auth/google")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(Map.of("credential", "tampered-jwt"))))
+                .andExpect(status().isUnauthorized());
+
+        // Cambiar nombre de usuario desde el perfil: entrega token nuevo, invalida el previo y conserva rol/correo
+        String firstToken = firstJson.get("token").asText();
+        mockMvc.perform(patch("/api/auth/profile")
+                        .header("Authorization", "Bearer " + firstToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", "admin_google_ok"))))
+                .andExpect(status().isBadRequest());
+
+        MvcResult renamedRes = mockMvc.perform(patch("/api/auth/profile")
+                        .header("Authorization", "Bearer " + firstToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", "pepe_mzt"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username", is("pepe_mzt")))
+                .andExpect(jsonPath("$.email", is("estudiante.mzt@gmail.com")))
+                .andExpect(jsonPath("$.token", notNullValue()))
+                .andReturn();
+
+        String newToken = objectMapper.readTree(renamedRes.getResponse().getContentAsString()).get("token").asText();
+        mockMvc.perform(get("/api/auth/verify")
+                        .header("Authorization", "Bearer " + newToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username", is("pepe_mzt")))
+                .andExpect(jsonPath("$.email", is("estudiante.mzt@gmail.com")));
+
+        // Eliminar propia cuenta y confirmar que el token ya no autentica
+        mockMvc.perform(delete("/api/auth/account")
+                        .header("Authorization", "Bearer " + newToken))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/auth/verify")
+                        .header("Authorization", "Bearer " + newToken))
                 .andExpect(status().isUnauthorized());
     }
 }

@@ -3110,6 +3110,7 @@ async function initGoogleAuthIntegration({ forceConfig = false } = {}) {
         const hasGoogle = Boolean(cfg.googleEnabled && cfg.googleClientId);
         const forceClassicPwd = new URLSearchParams(window.location.search).get('passwordLogin') === '1';
         const googleOnlyMode = hasGoogle && !forceClassicPwd;
+        window._googleOnlyAuthMode = googleOnlyMode;
 
         const loginSec = document.getElementById('google-login-section');
         const loginDivider = loginSec ? loginSec.querySelector('.auth-divider') : null;
@@ -3511,14 +3512,29 @@ function setupEventListeners() {
     const accountModal = document.getElementById('account-modal');
     const accountClose = document.getElementById('account-close');
     const accountLogoutBtn = document.getElementById('account-logout-btn');
+    const btnToggleEditProfile = document.getElementById('btn-toggle-edit-profile');
+    const editProfileForm = document.getElementById('edit-profile-form');
+    const editProfileErr = document.getElementById('edit-profile-error');
+    const editUsernameInput = document.getElementById('edit-username-input');
     const btnToggleChangePwd = document.getElementById('btn-toggle-change-pwd');
     const changePwdForm = document.getElementById('change-password-form');
     const changePwdErr = document.getElementById('change-pwd-error');
     const newPwdInput = document.getElementById('new-password-input');
     const changePwdRules = document.getElementById('change-pwd-rules');
+    const btnToggleDeleteAccount = document.getElementById('btn-toggle-delete-account');
+    const deleteAccountBox = document.getElementById('delete-account-box');
+    const btnConfirmDeleteAccount = document.getElementById('btn-confirm-delete-account');
+    const btnCancelDeleteAccount = document.getElementById('btn-cancel-delete-account');
     bindPasswordChecklist(newPwdInput, changePwdRules);
     
-    function resetChangePasswordForm() {
+    function resetAccountModalForms() {
+        if (editProfileForm) {
+            editProfileForm.style.display = 'none';
+        }
+        if (editProfileErr) {
+            editProfileErr.textContent = '';
+            editProfileErr.style.display = 'none';
+        }
         if (changePwdForm) {
             changePwdForm.reset();
             changePwdForm.style.display = 'none';
@@ -3527,23 +3543,118 @@ function setupEventListeners() {
             changePwdErr.textContent = '';
             changePwdErr.style.display = 'none';
         }
+        if (deleteAccountBox) {
+            deleteAccountBox.style.display = 'none';
+        }
         renderPasswordChecklist(changePwdRules, '');
+    }
+
+    function populateAccountModalInfo() {
+        const titleEl = document.getElementById('account-username');
+        const rolePillEl = document.getElementById('account-role-pill');
+        const emailEl = document.getElementById('account-email');
+        const createdEl = document.getElementById('account-created-at');
+        const u = Auth.user || {};
+
+        if (titleEl && u.username) {
+            titleEl.textContent = u.username;
+        }
+        if (rolePillEl) {
+            rolePillEl.style.display = u.role === 'ROLE_ADMIN' ? 'inline-flex' : 'none';
+        }
+        if (emailEl) {
+            emailEl.textContent = u.email || 'Sin correo vinculado';
+        }
+        if (createdEl) {
+            if (u.createdAtMs) {
+                try {
+                    createdEl.textContent = new Date(Number(u.createdAtMs)).toLocaleDateString('es-MX', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric'
+                    });
+                } catch (_) {
+                    createdEl.textContent = 'Cuenta activa';
+                }
+            } else {
+                createdEl.textContent = 'Cuenta activa';
+            }
+        }
+        if (editUsernameInput && u.username) {
+            editUsernameInput.value = u.username;
+        }
+        if (btnToggleEditProfile) {
+            const isBaseAdmin = String(u.username || '').toLowerCase() === 'admin';
+            btnToggleEditProfile.style.display = isBaseAdmin ? 'none' : 'flex';
+        }
+        if (btnToggleChangePwd) {
+            btnToggleChangePwd.style.display = window._googleOnlyAuthMode ? 'none' : 'flex';
+        }
+        if (btnToggleDeleteAccount) {
+            const isBaseAdmin = String(u.username || '').toLowerCase() === 'admin';
+            btnToggleDeleteAccount.style.display = isBaseAdmin ? 'none' : 'inline-block';
+        }
     }
 
     if (userBadge && accountModal) {
         userBadge.addEventListener('click', () => {
-            resetChangePasswordForm();
-            const titleEl = document.getElementById('account-username');
-            if (titleEl && Auth.user && Auth.user.username) {
-                titleEl.textContent = Auth.user.username;
-            }
+            resetAccountModalForms();
+            populateAccountModalInfo();
             accountModal.style.display = 'flex';
         });
     }
     if (accountClose && accountModal) {
         accountClose.addEventListener('click', () => {
-            resetChangePasswordForm();
+            resetAccountModalForms();
             accountModal.style.display = 'none';
+        });
+    }
+    if (btnToggleEditProfile && editProfileForm) {
+        btnToggleEditProfile.addEventListener('click', () => {
+            const isOpen = editProfileForm.style.display === 'flex';
+            editProfileForm.style.display = isOpen ? 'none' : 'flex';
+            if (editProfileErr) editProfileErr.style.display = 'none';
+            if (!isOpen && editUsernameInput && Auth.user?.username) {
+                editUsernameInput.value = Auth.user.username;
+                editUsernameInput.focus();
+            }
+        });
+    }
+    if (editProfileForm) {
+        editProfileForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (editProfileErr) editProfileErr.style.display = 'none';
+            const nextUsername = editUsernameInput ? editUsernameInput.value.trim() : '';
+            if (!/^[a-zA-Z0-9_.-]{3,30}$/.test(nextUsername)) {
+                showAuthBanner(
+                    editProfileErr,
+                    editProfileErr,
+                    'El usuario debe tener entre 3 y 30 caracteres (solo letras, números, . _ o -, sin espacios ni acentos).',
+                    'block'
+                );
+                return;
+            }
+            const submitBtn = editProfileForm.querySelector('button[type="submit"]');
+            await withButtonLoading(submitBtn, 'Guardando...', async () => {
+                try {
+                    const res = await Api.updateProfile(nextUsername);
+                    if (res.token) localStorage.setItem('token', res.token);
+                    localStorage.setItem('username', res.username);
+                    localStorage.setItem('role', res.role);
+                    Auth.user = {
+                        username: res.username,
+                        role: res.role,
+                        email: res.email || '',
+                        createdAtMs: res.createdAtMs || null
+                    };
+                    Auth.updateUI();
+                    populateAccountModalInfo();
+                    editProfileForm.style.display = 'none';
+                    showToast(res.message || 'Nombre de usuario actualizado');
+                } catch (err) {
+                    showAuthBanner(editProfileErr, editProfileErr, err.message || 'No se pudo actualizar tu nombre.', 'block');
+                }
+            });
         });
     }
     if (btnToggleChangePwd && changePwdForm) {
@@ -3574,7 +3685,7 @@ function setupEventListeners() {
             await withButtonLoading(submitBtn, 'Guardando...', async () => {
                 try {
                     await Api.changePassword(curr, next);
-                    resetChangePasswordForm();
+                    resetAccountModalForms();
                     accountModal.style.display = 'none';
                     showToast('Contraseña actualizada correctamente');
                 } catch (err) {
@@ -3583,9 +3694,34 @@ function setupEventListeners() {
             });
         });
     }
+    if (btnToggleDeleteAccount && deleteAccountBox) {
+        btnToggleDeleteAccount.addEventListener('click', () => {
+            deleteAccountBox.style.display = deleteAccountBox.style.display === 'flex' ? 'none' : 'flex';
+        });
+    }
+    if (btnCancelDeleteAccount && deleteAccountBox) {
+        btnCancelDeleteAccount.addEventListener('click', () => {
+            deleteAccountBox.style.display = 'none';
+        });
+    }
+    if (btnConfirmDeleteAccount && accountModal) {
+        btnConfirmDeleteAccount.addEventListener('click', async () => {
+            await withButtonLoading(btnConfirmDeleteAccount, 'Eliminando...', async () => {
+                try {
+                    const res = await Api.deleteAccount();
+                    resetAccountModalForms();
+                    accountModal.style.display = 'none';
+                    Auth.logout();
+                    showToast(res.message || 'Cuenta eliminada');
+                } catch (err) {
+                    showToast(err.message || 'No se pudo eliminar la cuenta', 'error');
+                }
+            });
+        });
+    }
     if (accountLogoutBtn && accountModal) {
         accountLogoutBtn.addEventListener('click', () => {
-            resetChangePasswordForm();
+            resetAccountModalForms();
             accountModal.style.display = 'none';
             Auth.logout();
         });
@@ -4015,32 +4151,32 @@ const menuContentData = {
     'guia_app': {
         title: '¿Cómo usar Don Rutero?',
         icon: 'assets/icons/ui_buscar.svg',
-        body: '1. Explorar rutas y paradas:\nBusca por nombre, colonia, hospital o plaza, o usa los filtros rápidos (Favoritas, Turístico, Centro, Frecuentes). Con el selector Normal / Estudiante cambias al instante el precio mostrado en cada tarjeta.\n\n2. Detalle de ruta, sentido y QR:\nToca cualquier ruta para ver su trazado exacto con flechas de dirección, tarifa, frecuencia estimada, línea de paradas y su botón de código QR o estrella para guardarla en Favoritas.\n\n3. Planificador "¿Cómo Llego?":\nElige tu origen (o toca "Usar mi GPS"), tu destino o un lugar turístico sugerido. Don Rutero te muestra rutas directas o con transbordo, la distancia a caminar, si te conviene cruzar la calle por el sentido del camión y el botón "Voy a bordo" para ir viendo tu próxima parada.\n\n4. Reportes ciudadanos:\nSi detectas un desvío, parada faltante o cambio de recorrido, envíanos un aviso desde "Reportar o Sugerir ruta".'
+        body: '1. Explorar rutas, Guías y tarifas:\nBusca por nombre, colonia, hospital o plaza, o usa los filtros rápidos (Todas, Favoritas, Turístico, Guías, Centro y Frecuentes). Con el selector Normal / Estudiante cambias al instante el precio mostrado en cada ruta.\n\n2. Detalle de ruta, sentido, QR y WhatsApp:\nToca cualquier ruta para ver su trazado calle por calle con flechas de dirección, tarifa, frecuencia estimada, lista de paradas, código QR, botón de Favoritas y Compartir.\n\n3. Planificador "¿Cómo Llego?" y atajos:\nDefine tu origen (con GPS, búsqueda o tocando el mapa) y tu destino o un lugar clave sugerido. También puedes guardar tus atajos rápidos (Casa, Chamba, Escuela) e invertir origen/destino con un toque. Don Rutero calcula opciones directas o con transbordo, caminata, tiempos estimados según el tráfico actual y el modo "Voy a bordo" con aviso de bajada.\n\n4. Pulso comunitario en vivo ("¡Vi pasar uno!" y Alertas):\n• En el detalle de una ruta puedes pulsar "¡Vi pasar uno!" para avisar a otros pasajeros en qué zona va el camión (visible 15 min).\n• Desde el ícono de la campana (Avisos) puedes reportar bloqueos, choques, obras, inundaciones, desvíos, tráfico lento u otros incidentes en tu avenida o colonia. Cuando 3 reportes similares coinciden en la zona, Don Rutero publica la alerta automática; con 2 confirmaciones de "Ya está todo bien" / "Ya está libre", se retira.\n\n5. Cuenta con Google y reportes de catálogo:\nEl inicio de sesión con Google es opcional y en un clic (puedes cambiar tu nombre de usuario o eliminar tu cuenta desde tu perfil). Si falta una ruta o parada, avísanos en "Reportar o Sugerir ruta".'
     },
     'faq': {
         title: 'Preguntas Frecuentes (FAQ)',
         icon: 'assets/icons/ui_campana.svg',
-        body: '• ¿Cuántas rutas tiene Don Rutero?\nActualmente contamos con 27 rutas trazadas calle por calle y 420 paradas ubicadas en colonias, Centro, Zona Dorada y vialidades principales de Mazatlán.\n\n• ¿Cuánto cuesta el pasaje?\nTarifa normal: entre $13.00 y $16.00 MXN según la ruta o unidad (tradicional o con aire acondicionado). Tarifa estudiantil: $3.50 MXN presentando credencial vigente o TIIE. Puedes alternar entre Normal y Estudiante directo en la app.\n\n• ¿Qué hago si no hay un camión directo?\nEn la pestaña "¿Cómo Llego?" el planificador también busca opciones con transbordo automático e indica la parada donde bajar y abordar el segundo camión.\n\n• ¿Necesito crear una cuenta para usar la app?\nNo. Todas las rutas, paradas, el planificador y "Voy a bordo" funcionan sin iniciar sesión. La cuenta es gratuita y opcional.\n\n• ¿A qué hora pasan los camiones?\nLa mayoría inicia alrededor de las 5:30 AM y realiza sus últimas vueltas entre las 9:30 PM y 10:30 PM, con intervalos aproximados de 8 a 20 minutos según la ruta.'
+        body: '• ¿Cuántas rutas tiene Don Rutero?\nContamos con 27 rutas trazadas calle por calle y más de 420 paradas verificadas en colonias, Centro, Zona Dorada, Cerritos y vialidades principales de Mazatlán.\n\n• ¿Cuánto cuesta el pasaje?\nTarifa general: entre $13.00 y $16.00 MXN según la ruta o unidad (tradicional o con aire acondicionado). Tarifa estudiantil: $3.50 MXN presentando credencial vigente o TIIE. Puedes alternar entre Normal y Estudiante directo en la app.\n\n• ¿Qué hago si no hay un camión directo?\nEn la pestaña "¿Cómo Llego?" el planificador busca también combinaciones con transbordo e indica exactamente en qué parada bajar y abordar el segundo camión.\n\n• ¿Cómo funciona la capa de tráfico y los tiempos estimados?\nPuedes activar el botón "Tráfico" sobre el mapa para ver el flujo en las principales avenidas de Mazatlán (fluido, moderado o lento) y ajustar los minutos estimados del viaje.\n\n• ¿Para qué sirve "¡Vi pasar uno!"?\nSi acabas de ver pasar un camión, tócalo en el detalle de la ruta. Queda marcado en el mapa durante 15 minutos con distancia aproximada respecto a tu parada.\n\n• ¿Cómo funcionan los reportes de bloqueos e incidentes ("3 similares = Alerta")?\nEn la campana de Avisos puedes reportar bloqueos, accidentes, obras, inundaciones, desvíos o escribir otro incidente y su avenida o colonia. Para evitar falsas alarmas, la alerta pública solo se activa cuando 3 usuarios coinciden en el mismo incidente y zona (o usan "+1 Yo igual"), y se retira cuando 2 usuarios confirman "Ya está todo bien".\n\n• ¿Necesito iniciar sesión con Google para usar la app?\nNo. Todas las rutas, paradas, Guías, el planificador y "Voy a bordo" funcionan sin cuenta. Iniciar sesión con Google es opcional, gratuito, en un clic y sin contraseñas.\n\n• ¿Qué pasó con las cuentas creadas antes de activar Google?\nSe reiniciaron las cuentas de prueba de la etapa Beta inicial. Si ya habías entrado antes, solo vuelve a iniciar sesión con tu cuenta de Google y podrás cambiar tu nombre de usuario en tu perfil cuando quieras.\n\n• ¿A qué hora pasan los camiones?\nLa mayoría inicia alrededor de las 5:30 AM y realiza sus últimas vueltas entre las 9:30 PM y 10:30 PM, con frecuencias aproximadas de 8 a 20 minutos según la ruta.'
     },
     'transporte_mzt': {
         title: 'Guía del Transporte en Mazatlán',
         icon: 'assets/icons/ui_camion.svg',
-        body: 'En Mazatlán operan principalmente dos agrupaciones urbanas:\n\n• Alianza de Camiones (Verdes / "Puro Sinaloa"):\nUnidades modernas —gran parte con aire acondicionado— que cubren corredores costeros (Malecón, Sábalo, Cerritos), Centro y colonias en expansión.\n\n• Águilas del Pacífico (Rojos):\nAutobuses tradicionales con cobertura amplia hacia colonias populares, zona norte, sur, Juárez y Centro Histórico.\n\nConsejos útiles para moverte:\n- Sentido de circulación: muchas rutas regresan por calles paralelas. Activa la ruta y sigue las flechas del mapa para pararte en la acera correcta.\n- Paradas visibles: acerca el mapa para ver los iconos de paraderos y lugares clave.\n- Tarifas y horarios: lleva cambio exacto ($13–$16 MXN general; $3.50 MXN estudiante con credencial/TIIE). El horario habitual va de ~5:30 AM a ~10:30 PM.'
+        body: 'En Mazatlán operan principalmente dos agrupaciones urbanas:\n\n• Alianza de Camiones (Verdes / "Puro Sinaloa"):\nUnidades modernas —gran parte con aire acondicionado— que cubren corredores costeros (Malecón, Zona Dorada, Sábalo, Cerritos), Centro y colonias en expansión.\n\n• Águilas del Pacífico (Rojos):\nAutobuses tradicionales con cobertura amplia hacia colonias populares, zona norte, sur, Juárez y Centro Histórico.\n\nConsejos útiles para moverte:\n- Sentido de circulación: muchas rutas regresan por calles paralelas. Activa la ruta y sigue las flechas del mapa para pararte en la acera correcta.\n- Guías turísticas y paradas: usa el filtro "Guías" para llegar directo a Malecón, Acuario, Faro, Centro Histórico o Cerritos, y acerca el mapa para ver paraderos.\n- Desvíos y bloqueos del día: revisa la campana de Avisos o el banner superior por si hay cierres por obras, lluvia o eventos.\n- Tarifas y horarios: lleva cambio exacto ($13–$16 MXN general; $3.50 MXN estudiante con credencial/TIIE). Horario habitual: ~5:30 AM a ~10:30 PM.'
     },
     'acerca': {
         title: 'Acerca de Don Rutero',
         icon: 'assets/icons/ui_ubicacion.svg',
-        body: 'Don Rutero es una plataforma web comunitaria y gratuita de movilidad urbana creada en Mazatlán, Sinaloa, para ayudar tanto a locales como a turistas a moverse en camión con claridad y sin perderse.\n\n¿Qué incluye hoy (Beta v1.0)?\n• Catálogo activo de 27 rutas y 420 paradas georreferenciadas.\n• Trazados con flechas de dirección adaptativas según el zoom.\n• Planificador "¿Cómo Llego?" con rutas directas, transbordos y cálculo de caminata.\n• Modo "Voy a bordo" (simulación o GPS en vivo) y códigos QR compartibles por ruta o parada.\n• Selector de tarifa Normal / Estudiante y lista de Favoritas.\n\nEste proyecto sigue creciendo con las aportaciones de quienes usan el camión todos los días en el puerto.\n\n© 2026 Don Rutero · Todos los derechos reservados.'
+        body: 'Don Rutero es una plataforma web comunitaria y gratuita de movilidad urbana creada en Mazatlán, Sinaloa, para ayudar tanto a locales como a turistas a moverse en camión con claridad y sin perderse.\n\n¿Qué incluye hoy (Beta v1.0)?\n• Catálogo activo de 27 rutas y más de 420 paradas georreferenciadas.\n• Trazados con flechas de dirección adaptativas y capa de tráfico vial de Mazatlán.\n• Planificador "¿Cómo Llego?" con rutas directas, transbordos, caminata, atajos personales (Casa / Chamba / Escuela) y Guías Turísticas.\n• Pulso comunitario en vivo: avistamientos "¡Vi pasar uno!" (15 min) y alertas ciudadanas por similitud (3 reportes = Alerta).\n• Modo "Voy a bordo" (simulación o GPS en vivo), códigos QR, compartir por WhatsApp, Favoritas y acceso rápido con Google.\n\nEste proyecto sigue creciendo gracias a la comunidad que usa el camión todos los días en el puerto.\n\n© 2026 Don Rutero · Todos los derechos reservados.'
     },
     'terminos': {
         title: 'Términos de Uso',
         icon: 'assets/icons/ui_escudo.svg',
-        body: 'Última actualización: noviembre de 2026\n\n1. Carácter informativo del servicio\nDon Rutero es una plataforma comunitaria gratuita orientada a facilitar la consulta de rutas, paradas y transbordos aproximados del transporte público urbano en Mazatlán, Sinaloa. No está afiliada ni operada de manera oficial por concesionarios, alianzas de camiones ni autoridades de movilidad.\n\n2. Exactitud de rutas, tarifas y horarios\nLos trazados, paraderos, tarifas (general y estudiante) y frecuencias mostradas son referenciales y pueden cambiar por desvíos, obras viales, clima, tránsito o ajustes operativos sin previo aviso.\n\n3. Uso adecuado y cuentas\nEl usuario se compromete a utilizar el sitio de forma lícita, sin realizar peticiones automatizadas abusivas, intentar vulnerar la seguridad o suplantar identidad. Las sugerencias o reportes enviados pueden usarse para mejorar el catálogo de rutas.\n\n4. Propiedad intelectual y atribuciones\n© 2026 Don Rutero. Todos los derechos reservados. El nombre, logotipo, diseño de interfaz y código de la plataforma pertenecen a sus autores. La cartografía base y geocodificación corresponden a OpenStreetMap y sus colaboradores.\n\n5. Limitación de responsabilidad\nLa plataforma se ofrece "tal cual" en fase Beta. Las decisiones de traslado corresponden únicamente al usuario.'
+        body: 'Última actualización: noviembre de 2026\n\n1. Carácter informativo del servicio\nDon Rutero es una plataforma comunitaria gratuita orientada a facilitar la consulta de rutas, paradas y transbordos aproximados del transporte público urbano en Mazatlán, Sinaloa. No está afiliada ni operada de manera oficial por concesionarios, alianzas de camiones ni autoridades de movilidad.\n\n2. Exactitud de rutas, tarifas, tráfico y avisos ciudadanos\nLos trazados, paraderos, tarifas (general y estudiante), frecuencias, estado del tráfico y reportes comunitarios en vivo ("¡Vi pasar uno!", bloqueos, desvíos o incidentes) son referenciales y pueden variar por condiciones viales, clima, desvíos o decisiones operativas sin previo aviso.\n\n3. Uso adecuado, cuentas e inicio de sesión con Google\nEl usuario se compromete a utilizar Don Rutero de forma lícita y respetuosa, sin publicar reportes falsos, ofensivos o automatizados (spam), sin suplantar identidad ni intentar vulnerar la seguridad del sitio. Si eliges iniciar sesión mediante Google, ese acceso se rige además por los Términos de Servicio de Google. Don Rutero puede retirar avisos erróneos o suspender cuentas que hagan mal uso de la plataforma.\n\n4. Aportaciones voluntarias\nEl uso completo de la aplicación es gratuito. Cualquier apoyo económico mediante la sección "Apoyar" es totalmente voluntario y no constituye pago por un servicio ni relación comercial.\n\n5. Propiedad intelectual y atribuciones\n© 2026 Don Rutero. Todos los derechos reservados. El nombre, diseño de interfaz y código de la plataforma pertenecen a sus autores. La cartografía base y geocodificación corresponden a OpenStreetMap / Nominatim y sus colaboradores.\n\n6. Limitación de responsabilidad\nLa plataforma se ofrece "tal cual" en fase Beta. Las decisiones de traslado corresponden únicamente al usuario.'
     },
     'privacidad': {
         title: 'Aviso de Privacidad',
         icon: 'assets/icons/ui_candado_check.svg',
-        body: 'Última actualización: noviembre de 2026\n\n1. Datos personales que recopilamos\n• Navegación pública: puedes consultar rutas, paradas y el planificador sin crear cuenta ni proporcionar datos personales.\n• Registro opcional de cuenta: si decides registrarte, almacenamos únicamente tu nombre de usuario, correo electrónico y tu contraseña cifrada (hash seguro BCrypt) para gestionar tu sesión.\n\n2. Uso de tu ubicación (GPS)\nCuando utilizas "Mi ubicación" o el modo "Voy a bordo (GPS)", las coordenadas de tu dispositivo se procesan localmente en tu navegador para centrar el mapa o identificar paradas cercanas. No guardamos ni rastreamos tu historial de ubicaciones en nuestros servidores.\n\n3. Almacenamiento local del navegador\nGuardamos en el almacenamiento local (localStorage) tu sesión activa y tus rutas favoritas para recordarlas entre visitas.\n\n4. Servicios de terceros\nPara mostrar el mapa y buscar direcciones por nombre, tu navegador solicita mosaicos y resultados de OpenStreetMap / Nominatim conforme a sus políticas. Don Rutero no vende ni comparte tus datos con terceros con fines publicitarios.\n\n5. Contacto y eliminación de cuenta\nSi deseas solicitar la eliminación o corrección de tu cuenta o tienes dudas sobre privacidad, puedes contactarnos mediante la opción "Reportar o Sugerir ruta" en el menú.'
+        body: 'Última actualización: noviembre de 2026\n\n1. Datos personales que recopilamos\n• Navegación pública: puedes consultar rutas, paradas, tráfico y el planificador sin crear cuenta ni proporcionar datos personales.\n• Inicio de sesión con Google (Google Identity Services): cuando eliges "Continuar con Google", Google autentica tu identidad y comparte únicamente tu correo electrónico verificado y tu nombre de perfil (usado para generar tu nombre de usuario inicial). Don Rutero no recibe ni almacena tu contraseña de Google ni accede a tus archivos, contactos u otros servicios de tu cuenta.\n• Datos de perfil almacenados: conservamos en nuestra base de datos tu nombre de usuario (editable desde tu perfil), correo electrónico vinculado, rol de acceso y fecha/hora de registro. (Si existieran cuentas clásicas con contraseña, se almacenan con hash seguro BCrypt).\n\n2. Uso de tu ubicación (GPS) y reportes en vivo\n• Al usar "Mi ubicación" o "Voy a bordo (GPS)", tus coordenadas se procesan localmente en tu navegador para centrar el mapa o avisarte de tu bajada. No guardamos historial de tus traslados.\n• Si envías voluntariamente un avistamiento ("¡Vi pasar uno!") o un reporte de bloqueo/incidente, el sistema conserva temporalmente la referencia de zona o punto del evento en memoria (de 15 minutos a 3 horas) para mostrar el pulso ciudadano sin exponer públicamente tu correo ni identidad.\n\n3. Almacenamiento local del navegador\nGuardamos en tu dispositivo (localStorage) tu token de sesión JWT, rutas favoritas, atajos personales (Casa/Chamba/Escuela) y preferencias de tarifa.\n\n4. Servicios de terceros\nUtilizamos Google Identity Services (solo si decides iniciar sesión con Google, sujeto a la Política de Privacidad de Google) y OpenStreetMap / Nominatim para mostrar el mapa y buscar colonias o calles. Don Rutero no vende, alquila ni comparte tus datos personales con terceros con fines publicitarios.\n\n5. Control y eliminación de tu cuenta\nPuedes modificar tu nombre de usuario o eliminar permanentemente tu cuenta desde el botón de tu perfil en la barra superior, o escribirnos mediante "Reportar o Sugerir ruta".'
     },
     'legal': {
         title: 'Términos de Uso y Privacidad',

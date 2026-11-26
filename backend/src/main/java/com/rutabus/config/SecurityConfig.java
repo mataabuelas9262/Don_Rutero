@@ -71,8 +71,8 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Recursos estáticos del Frontend
                 .requestMatchers("/", "/index.html", "/admin.html", "/sw.js", "/css/**", "/js/**", "/assets/**", "/favicon.ico").permitAll()
-                // Cambio de contraseña requiere usuario autenticado
-                .requestMatchers("/api/auth/change-password").authenticated()
+                // Gestión de cuenta requiere usuario autenticado
+                .requestMatchers("/api/auth/change-password", "/api/auth/profile", "/api/auth/account").authenticated()
                 // Rutas públicas de autenticación, catálogo, tráfico y pulso comunitario
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/routes/**").permitAll()

@@ -453,19 +453,43 @@
 
     <!-- Account Settings Modal -->
     <div id="account-modal" class="form-overlay" style="display:none;">
-        <div class="form-card auth-card-premium" style="max-width: 380px; padding: 24px;">
+        <div class="form-card auth-card-premium" style="max-width: 400px; padding: 24px;">
             <button id="account-close" class="form-close">
                 <img src="assets/icons/ui_cerrar.svg" alt="Cerrar" style="width:14px; height:14px;">
             </button>
-            <div class="auth-header" style="margin-bottom: 20px;">
+            <div class="auth-header" style="margin-bottom: 14px;">
                 <div class="auth-icon-badge badge-blue">
                     <img src="assets/icons/ui_usuario.svg" alt="">
                 </div>
-                <h2 id="account-username">Mi perfil</h2>
+                <div style="display:flex; align-items:center; justify-content:center; gap:8px; flex-wrap:wrap;">
+                    <h2 id="account-username" style="margin:0;">Mi perfil</h2>
+                    <span id="account-role-pill" style="display:none; font-size:0.68rem; font-weight:700; padding:2px 8px; border-radius:999px; background:#EEF2FF; color:#3730A3;">Admin</span>
+                </div>
                 <p class="auth-subtitle">Gestiona tu cuenta de Don Rutero</p>
+            </div>
+
+            <div id="account-meta-card" style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 5px; font-size: 0.78rem; color: var(--text-secondary);">
+                <div style="display:flex; justify-content:space-between; gap:8px;">
+                    <span style="color:var(--text-muted);">Correo</span>
+                    <strong id="account-email" style="color:var(--text-primary); word-break:break-all; text-align:right;">—</strong>
+                </div>
+                <div style="display:flex; justify-content:space-between; gap:8px;">
+                    <span style="color:var(--text-muted);">Registrado</span>
+                    <span id="account-created-at" style="color:var(--text-primary); text-align:right;">—</span>
+                </div>
             </div>
             
             <div style="display: flex; flex-direction: column; gap: 10px;">
+                <button id="btn-toggle-edit-profile" type="button" class="btn btn-secondary btn-full" style="justify-content: flex-start;">
+                    <img src="assets/icons/ui_usuario.svg" alt="" style="width: 16px;"> Cambiar nombre de usuario
+                </button>
+                <form id="edit-profile-form" style="display: none; flex-direction: column; gap: 8px; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    <div id="edit-profile-error" style="display: none; font-size: 0.76rem; color: var(--danger); font-weight: 600;"></div>
+                    <input type="text" id="edit-username-input" class="form-control" placeholder="Nuevo nombre de usuario (3-30 caracteres)" maxlength="30" required autocomplete="username">
+                    <span style="font-size:0.7rem; color:var(--text-muted);">Usa letras, números, punto (.), guion (-) o guion bajo (_).</span>
+                    <button type="submit" class="btn btn-primary btn-full" style="padding: 8px 12px; font-size: 0.82rem;">Guardar nombre</button>
+                </form>
+
                 <button id="btn-toggle-change-pwd" type="button" class="btn btn-secondary btn-full" style="justify-content: flex-start;">
                     <img src="assets/icons/ui_candado.svg" alt="" style="width: 16px;"> Cambiar contraseña
                 </button>
@@ -477,10 +501,21 @@
                     <input type="password" id="confirm-new-password-input" class="form-control" placeholder="Confirmar nueva contraseña" required autocomplete="new-password">
                     <button type="submit" class="btn btn-primary btn-full" style="padding: 8px 12px; font-size: 0.82rem;">Guardar nueva contraseña</button>
                 </form>
-                <hr style="border: 0; border-top: 1px solid var(--border); margin: 6px 0;">
+
+                <hr style="border: 0; border-top: 1px solid var(--border); margin: 4px 0;">
                 <button id="account-logout-btn" type="button" class="btn btn-danger btn-full">
                     Cerrar sesión
                 </button>
+                <button id="btn-toggle-delete-account" type="button" style="background:none; border:none; padding:4px; font-size:0.75rem; color:var(--text-muted); cursor:pointer; text-decoration:underline; align-self:center;">
+                    Eliminar mi cuenta
+                </button>
+                <div id="delete-account-box" style="display:none; flex-direction:column; gap:8px; padding:10px; background:#FEF2F2; border:1px solid #FECACA; border-radius:var(--radius-sm); font-size:0.76rem; color:#991B1B;">
+                    <span>Esta acción borrará permanentemente tu cuenta de Don Rutero.</span>
+                    <div style="display:flex; gap:8px;">
+                        <button id="btn-confirm-delete-account" type="button" class="btn btn-danger" style="flex:1; padding:6px 10px; font-size:0.76rem;">Sí, eliminar</button>
+                        <button id="btn-cancel-delete-account" type="button" class="btn btn-secondary" style="flex:1; padding:6px 10px; font-size:0.76rem;">Cancelar</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

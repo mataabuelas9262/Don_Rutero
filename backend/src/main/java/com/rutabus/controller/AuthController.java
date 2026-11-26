@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.text.Normalizer;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -304,10 +305,8 @@ public class AuthController {
             }
 
             String jwt = tokenProvider.generateToken(user.getUsername(), user.getRole());
-            Map<String, Object> res = new HashMap<>();
+            Map<String, Object> res = buildUserSessionMap(user);
             res.put("token", jwt);
-            res.put("username", user.getUsername());
-            res.put("role", user.getRole());
             res.put("googleNewUser", isNewUser);
             return ResponseEntity.ok(res);
         } catch (IllegalStateException e) {
@@ -506,10 +505,8 @@ public class AuthController {
             }
             String jwt = tokenProvider.generateToken(user.getUsername(), user.getRole());
 
-            Map<String, Object> response = new HashMap<>();
+            Map<String, Object> response = buildUserSessionMap(user);
             response.put("token", jwt);
-            response.put("username", user.getUsername());
-            response.put("role", user.getRole());
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -533,14 +530,94 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Sesión revocada. Inicia sesión nuevamente."));
             }
 
-            Map<String, Object> response = new HashMap<>();
-            response.put("username", user.getUsername());
-            response.put("role", user.getRole());
-
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok(buildUserSessionMap(user));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Token inválido o expirado"));
         }
+    }
+
+    @PatchMapping("/profile")
+    public ResponseEntity<?> updateProfile(@RequestBody(required = false) Map<String, String> request, HttpServletRequest httpReq) {
+        if (isRateLimited(httpReq, "profile")) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Demasiados intentos. Espera un minuto."));
+        }
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Sesión requerida."));
+        }
+
+        User user = userRepository.findByUsername(auth.getName()).orElse(null);
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Usuario no encontrado."));
+        }
+
+        String newUsername = request != null && request.get("username") != null
+                ? request.get("username").trim()
+                : "";
+        if (!USERNAME_PATTERN.matcher(newUsername).matches()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "El usuario debe tener entre 3 y 30 caracteres (solo letras, números, . _ o -, sin espacios ni acentos)."));
+        }
+
+        String oldUsername = user.getUsername();
+        if ("admin".equalsIgnoreCase(oldUsername) && !oldUsername.equals(newUsername)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "La cuenta base 'admin' no puede renombrarse."));
+        }
+
+        if (!oldUsername.equals(newUsername)) {
+            User conflict = userRepository.findByUsername(newUsername).orElse(null);
+            if (conflict != null && !conflict.getId().equals(user.getId())) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Ese nombre de usuario ya está en uso. Prueba con otro."));
+            }
+            user.setUsername(newUsername);
+            user = userRepository.save(user);
+            tokenProvider.invalidateUserTokens(oldUsername);
+        }
+
+        String freshToken = tokenProvider.generateToken(user.getUsername(), user.getRole());
+        Map<String, Object> response = buildUserSessionMap(user);
+        response.put("token", freshToken);
+        response.put("message", "Nombre de usuario actualizado correctamente.");
+        return ResponseEntity.ok(response);
+    }
+
+    @DeleteMapping("/account")
+    public ResponseEntity<?> deleteOwnAccount(HttpServletRequest httpReq) {
+        if (isRateLimited(httpReq, "delete-account")) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Demasiados intentos. Espera un minuto."));
+        }
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Sesión requerida."));
+        }
+
+        User user = userRepository.findByUsername(auth.getName()).orElse(null);
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Usuario no encontrado."));
+        }
+        if ("admin".equalsIgnoreCase(user.getUsername())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "La cuenta base 'admin' no puede eliminarse desde aquí."));
+        }
+
+        String username = user.getUsername();
+        tokenProvider.invalidateUserTokens(username);
+        userRepository.delete(user);
+        return ResponseEntity.ok(Map.of("message", "Tu cuenta fue eliminada correctamente."));
+    }
+
+    private Map<String, Object> buildUserSessionMap(User user) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("username", user.getUsername());
+        map.put("role", user.getRole());
+        map.put("email", user.getEmail() != null ? user.getEmail() : "");
+        map.put("createdAtMs", user.getCreatedAt() != null
+                ? user.getCreatedAt().toInstant(ZoneOffset.UTC).toEpochMilli()
+                : null);
+        return map;
     }
 
     @PostMapping("/change-password")

@@ -28,7 +28,12 @@ const Auth = {
             localStorage.setItem('token', data.token);
             localStorage.setItem('username', data.username);
             localStorage.setItem('role', data.role);
-            Auth.user = { username: data.username, role: data.role };
+            Auth.user = {
+                username: data.username,
+                role: data.role,
+                email: data.email || '',
+                createdAtMs: data.createdAtMs || null
+            };
             Auth.updateUI();
             showToast('Sesión iniciada correctamente');
             return true;
@@ -44,7 +49,12 @@ const Auth = {
             localStorage.setItem('token', data.token);
             localStorage.setItem('username', data.username);
             localStorage.setItem('role', data.role);
-            Auth.user = { username: data.username, role: data.role };
+            Auth.user = {
+                username: data.username,
+                role: data.role,
+                email: data.email || '',
+                createdAtMs: data.createdAtMs || null
+            };
             Auth.updateUI();
             showToast(data.googleNewUser
                 ? '¡Cuenta creada y sesión iniciada con Google!'

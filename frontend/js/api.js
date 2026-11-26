@@ -154,6 +154,31 @@ const Api = {
         return data;
     },
 
+    updateProfile: async (username) => {
+        const response = await fetch(`${API_BASE_URL}/auth/profile`, {
+            method: 'PATCH',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ username })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'No se pudo actualizar tu perfil');
+        }
+        return data;
+    },
+
+    deleteAccount: async () => {
+        const response = await fetch(`${API_BASE_URL}/auth/account`, {
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'No se pudo eliminar la cuenta');
+        }
+        return data;
+    },
+
     // -----------------------------------------------------
     // CONSULTA DE RUTAS Y PARADAS (PÚBLICAS)
     // -----------------------------------------------------
