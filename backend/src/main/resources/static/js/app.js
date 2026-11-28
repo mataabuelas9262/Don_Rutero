@@ -260,6 +260,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 // CARGA Y RENDERIZADO DE RUTAS
 // ----------------------------------------------------------
 
+function updateDynamicCatalogStats(routeCount, stopCount) {
+    const rCount = Number.isFinite(routeCount) && routeCount > 0 ? routeCount : (Array.isArray(allRoutes) && allRoutes.length > 0 ? allRoutes.length : 38);
+    const sCount = Number.isFinite(stopCount) && stopCount > 0 ? stopCount : (window._totalCatalogStops || 472);
+    window._totalCatalogRoutes = rCount;
+    window._totalCatalogStops = sCount;
+    const noticeTitle = document.getElementById('notice-catalog-count-title');
+    if (noticeTitle) {
+        noticeTitle.textContent = `${rCount} rutas y ${sCount} paradas en Mazatlán`;
+    }
+}
+
 function hydrateRoutesFromBootstrap(data) {
     const routes = Array.isArray(data?.routes) ? data.routes : [];
     const stops = Array.isArray(data?.stops) ? data.stops : [];
@@ -284,6 +295,7 @@ function hydrateRoutesFromBootstrap(data) {
     });
 
     allRoutes = routes;
+    updateDynamicCatalogStats(routes.length, stops.length);
     renderRoutes(allRoutes);
     return stops;
 }
@@ -319,6 +331,9 @@ async function loadRoutesList() {
                 route.coordinatesList = [];
             }
         }));
+        const uniqueStopIds = new Set();
+        allRoutes.forEach(r => (r.stopsList || []).forEach(rs => { if (rs?.stop?.id) uniqueStopIds.add(rs.stop.id); }));
+        updateDynamicCatalogStats(allRoutes.length, uniqueStopIds.size || undefined);
         renderRoutes(allRoutes);
     } catch (err) {
         showToast('Error al conectar con el servidor', 'error');
@@ -4211,6 +4226,12 @@ function showMenuModal(type) {
 
     const data = menuContentData[type];
     if (!data) return;
+
+    const rCount = window._totalCatalogRoutes || (Array.isArray(allRoutes) && allRoutes.length > 0 ? allRoutes.length : 38);
+    const sCount = window._totalCatalogStops || 472;
+    const resolvedBody = String(data.body || '')
+        .replace(/27 rutas/g, `${rCount} rutas`)
+        .replace(/más de 420 paradas/g, `${sCount} paradas`);
     
     const modal = document.getElementById('info-modal');
     const titleEl = document.getElementById('info-modal-title');
@@ -4219,7 +4240,7 @@ function showMenuModal(type) {
     
     if (titleEl) titleEl.textContent = data.title;
     if (bodyEl) {
-        bodyEl.textContent = data.body;
+        bodyEl.textContent = resolvedBody;
         bodyEl.scrollTop = 0;
     }
     if (iconEl) iconEl.src = data.icon;
